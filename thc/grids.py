@@ -117,13 +117,40 @@ class InterpolatingPoints(Grids):
             coords.append(c[ind])
             weighs.append(w[ind])
 
-            print(ia, ind)
+        self.coords = numpy.vstack(coords)
+        self.weights = numpy.hstack(weighs)
 
-        # coords = numpy.vstack(coords)
-        # weighs = numpy.hstack(weighs)
-        # return grids
+        if sort_grids:
+            from pyscf.dft.gen_grid import arg_group_grids
+            ind = arg_group_grids(mol, self.coords)
+            self.coords = self.coords[ind]
+            self.weights = self.weights[ind]
+
+        if self.alignment > 1:
+            from pyscf.dft.gen_grid import _padding_size
+            padding = _padding_size(self.size, self.alignment)
+            logger.debug(self, 'Padding %d grids', padding)
+            if padding > 0:
+                self.coords = numpy.vstack(
+                    [self.coords, numpy.repeat([[1e-4]*3], padding, axis=0)])
+                self.weights = numpy.hstack([self.weights, numpy.zeros(padding)])
+
+        if with_non0tab:
+            self.non0tab = self.make_mask(mol, self.coords)
+            self.screen_index = self.non0tab
+        else:
+            self.screen_index = self.non0tab = None
+
+        logger.info(self, 'tot grids = %d', len(self.weights))
+        return self
     
 if __name__ == "__main__":
     mol = pyscf.gto.M(atom="H 0 0 0; H 0 0 1", basis="sto-3g")
+
     grids = InterpolatingPoints(mol)
     grids.build()
+
+    print(grids.coords)
+    print(grids.weights)
+
+    print(grids.coords.shape)
