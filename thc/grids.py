@@ -100,7 +100,7 @@ class InterpolatingPoints(Grids):
             self.level, self.prune, **kwargs
             )
         
-        self.coords, self.weights = self.get_partition(
+        tmp = self.get_partition(
             mol, atom_grids_tab, self.radii_adjust, 
             self.atomic_radii, self.becke_scheme,
             concat=False
@@ -109,8 +109,9 @@ class InterpolatingPoints(Grids):
         coords = []
         weighs = []
 
+        dm0 = None
         aoslice = mol.aoslice_by_atom()
-        for ia, (c, w) in enumerate(zip(self.coords, self.weights)):
+        for ia, (c, w) in enumerate(zip(*tmp)):
             nao = (lambda s: s[3] - s[2])(aoslice[ia])
             nip = int(self.c_isdf) * nao
 
@@ -120,6 +121,17 @@ class InterpolatingPoints(Grids):
             if self.method == "kmeans":
                 ind = kmeans(
                     c, w, nip=nip*2, 
+                    ind0=None,
+                    max_cycle=20, tol=1e-4,
+                    )
+                ind = ind[:nip]
+
+            elif self.method == "kmeans-density":
+                from pyscf.scf.hf import init_guess_by_atom
+                dm0 = init_guess_by_atom(mol) if dm0 is None else dm0
+                rho = numint.eval_rho(mol, phi, dm0)
+                ind = kmeans(
+                    c, rho * numpy.sqrt(w), nip=nip*2, 
                     ind0=None,
                     max_cycle=20, tol=1e-4,
                     )
@@ -146,7 +158,7 @@ class InterpolatingPoints(Grids):
             coord2 = numpy.vstack(coords)
             dump_grids(mol, coord1, coord2, "/Users/yangjunjie/Downloads/h2o-%s.log" % self.method)
 
-        self.coords = numpy.vstack(coords)
+        self.coords  = numpy.vstack(coords)
         self.weights = numpy.hstack(weighs)
 
         if sort_grids:
@@ -164,7 +176,6 @@ class InterpolatingPoints(Grids):
         else:
             self.screen_index = self.non0tab = None
 
-        # logger.info(self, 'tot grids = %d', len(self.weights))
         return self
     
 if __name__ == "__main__":
@@ -188,5 +199,11 @@ if __name__ == "__main__":
     grids = InterpolatingPoints(m)
     grids.level = 0
     grids.c_isdf = 5
-    grids.method = "kmeans"
+    grids.method = "kmeans-density"
     grids.build()
+
+    grids = InterpolatingPoints(m)
+    grids.level = 0
+    grids.c_isdf = 5
+    grids.method = "kmeans"
+    grids.build()    
