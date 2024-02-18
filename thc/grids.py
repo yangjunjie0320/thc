@@ -41,12 +41,14 @@ def kmeans(coords, weighs, nip=10, ind0=None, max_cycle=100, tol=1e-4):
 
         # Update centroids
         centd_new = [numpy.bincount(label, weights=coords[:, d] * weighs) for d in range(ndim)]
-        centd_new = numpy.array(centd_new) / numpy.bincount(label, weights=weighs)[:, None]
+        centd_new = numpy.array(centd_new).T / numpy.abs(numpy.bincount(label, weights=weighs)[:, None] + 1e-6)
 
         # Check for convergence
         err = numpy.linalg.norm(centd_new - centd_old) / nip
         is_converged = (err < tol)
         is_max_cycle = (icycle >= max_cycle)
+
+        print("K-Means: cycle = % 3d, error = % 6.4e" % (icycle, err))
 
         icycle += 1
         centd_old = centd_new
@@ -54,8 +56,27 @@ def kmeans(coords, weighs, nip=10, ind0=None, max_cycle=100, tol=1e-4):
     # Post-processing: map centroids to grid points
     return numpy.unique(vq(centd_old, coords)[0])
 
+def dump_grids(mol, grid_coord, isdf_coord, outfile):
+    from pyscf.lib import param
+
+    s  = mol.tostring("xyz")
+    s += "\n\n"
+
+    s += "# The Parent Grid\n"
+    for i in range(grid_coord.shape[0]):
+        coord = grid_coord[i] * param.BOHR
+        s += "% 12.8f % 12.8f % 12.8f\n" % tuple(coord)
+
+    s += "\n# The Pruned Grid\n"
+    for i in range(isdf_coord.shape[0]):
+        coord = isdf_coord[i] * param.BOHR
+        s += "% 12.8f % 12.8f % 12.8f\n" % tuple(coord)
+
+    with open(outfile, "w") as f:
+        f.write(s)
 
 class InterpolatingPoints(Grids):
+    alignment = 0
     c_isdf = 10
     method = "qr"
 
@@ -73,6 +94,7 @@ class InterpolatingPoints(Grids):
         if mol is None: mol = self.mol
         if self.verbose >= logger.WARN:
             self.check_sanity()
+
         atom_grids_tab = self.gen_atomic_grids(
             mol, self.atom_grid, self.radi_method, 
             self.level, self.prune, **kwargs
@@ -88,10 +110,8 @@ class InterpolatingPoints(Grids):
         weighs = []
 
         aoslice = mol.aoslice_by_atom()
-
         for ia, (c, w) in enumerate(zip(self.coords, self.weights)):
-            s   = aoslice[ia]
-            nao = s[3] - s[2]
+            nao = (lambda s: s[3] - s[2])(aoslice[ia])
             nip = int(self.c_isdf) * nao
 
             phi = numint.eval_ao(mol, c, deriv=0)
@@ -99,12 +119,13 @@ class InterpolatingPoints(Grids):
 
             if self.method == "kmeans":
                 ind = kmeans(
-                    c, w, nip=nip*2, ind0=None, 
-                    max_cycle=100, tol=1e-4
+                    c, w, nip=nip*2, 
+                    ind0=None,
+                    max_cycle=20, tol=1e-4,
                     )
                 ind = ind[:nip]
-
-            else:
+                
+            elif self.method == "qr":
                 import scipy.linalg
                 from pyscf.lib import pack_tril
 
@@ -114,8 +135,16 @@ class InterpolatingPoints(Grids):
                 q, r, perm = scipy.linalg.qr(rho.T, pivoting=True)
                 ind = perm[:nip]
 
+            else:
+                raise KeyError("Unknown method: %s" % self.method)
+
             coords.append(c[ind])
             weighs.append(w[ind])
+
+        if self.verbose >= logger.DEBUG:
+            coord1 = numpy.vstack(self.coords)
+            coord2 = numpy.vstack(coords)
+            dump_grids(mol, coord1, coord2, "/Users/yangjunjie/Downloads/h2o-%s.log" % self.method)
 
         self.coords = numpy.vstack(coords)
         self.weights = numpy.hstack(weighs)
@@ -127,13 +156,7 @@ class InterpolatingPoints(Grids):
             self.weights = self.weights[ind]
 
         if self.alignment > 1:
-            from pyscf.dft.gen_grid import _padding_size
-            padding = _padding_size(self.size, self.alignment)
-            logger.debug(self, 'Padding %d grids', padding)
-            if padding > 0:
-                self.coords = numpy.vstack(
-                    [self.coords, numpy.repeat([[1e-4]*3], padding, axis=0)])
-                self.weights = numpy.hstack([self.weights, numpy.zeros(padding)])
+            raise KeyError("Alignment is not supported for ISDF grids.")
 
         if with_non0tab:
             self.non0tab = self.make_mask(mol, self.coords)
@@ -141,16 +164,29 @@ class InterpolatingPoints(Grids):
         else:
             self.screen_index = self.non0tab = None
 
-        logger.info(self, 'tot grids = %d', len(self.weights))
+        # logger.info(self, 'tot grids = %d', len(self.weights))
         return self
     
 if __name__ == "__main__":
-    mol = pyscf.gto.M(atom="H 0 0 0; H 0 0 1", basis="sto-3g")
+    m = pyscf.gto.M(
+        atom="""
+        O   -6.0082242   -6.2662586   -4.5802338
+        H   -6.5424905   -5.6103439   -4.0656431
+        H   -5.6336920   -6.8738199   -3.8938766
+        O   -5.0373186   -5.2694388   -1.2581917
+        H   -4.2054186   -5.5931034   -0.8297803
+        H   -4.7347234   -4.8522045   -2.1034720
+        """, basis="sto3g", verbose=0
+        )
 
-    grids = InterpolatingPoints(mol)
+    grids = InterpolatingPoints(m)
+    grids.level = 0
+    grids.c_isdf = 5
+    grids.method = "qr"
     grids.build()
 
-    print(grids.coords)
-    print(grids.weights)
-
-    print(grids.coords.shape)
+    grids = InterpolatingPoints(m)
+    grids.level = 0
+    grids.c_isdf = 5
+    grids.method = "kmeans"
+    grids.build()
