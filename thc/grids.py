@@ -1,13 +1,13 @@
-import numpy, scipy
+import pyscf, numpy, scipy
+from scipy.sparse import dok_array
 
 import pyscf
 from pyscf.lib import logger
 from pyscf.dft import numint
 
-from pyscf.dft import gen_grid
 from pyscf.dft.gen_grid import Grids
 
-def kmeans(coords, weighs, nip=10, ind0=None, max_cycle=100, tol=1e-4):
+def kmeans(coords, weighs, nip=10, ind0=None, max_cycle=100, tol=1e-4, verbose=0):
     """
     Perform K-Means clustering to find interpolation points.
 
@@ -22,7 +22,9 @@ def kmeans(coords, weighs, nip=10, ind0=None, max_cycle=100, tol=1e-4):
     Returns:
         numpy.ndarray: Interpolation indices after K-Means clustering.
     """
+    log = logger.new_logger(None, verbose)
     ng, ndim = coords.shape
+    nip = min(nip, ng)
 
     # Guess initial centroids by randomly selecting grid points
     if ind0 is None:
@@ -48,7 +50,7 @@ def kmeans(coords, weighs, nip=10, ind0=None, max_cycle=100, tol=1e-4):
         is_converged = (err < tol)
         is_max_cycle = (icycle >= max_cycle)
 
-        print("K-Means: cycle = % 3d, error = % 6.4e" % (icycle, err))
+        log.debug("K-Means: cycle = % 3d, error = % 6.4e" % (icycle, err))
 
         icycle += 1
         centd_old = centd_new
@@ -76,87 +78,68 @@ def dump_grids(mol, grid_coord, isdf_coord, outfile):
         f.write(s)
 
 class InterpolatingPoints(Grids):
-    alignment = 0
+    tol = 1e-8
     c_isdf = 10
-    method = "qr"
-
+    alignment = 0
+    
     def build(self, mol=None, with_non0tab=False, sort_grids=True, **kwargs):
         '''
         Build ISDF grids.
-        Currently, only the K-means method is applied to construct the grid.
-        The weighting function is defined as the atomic density multiplied by
-        the square root of the DFT quadrature weight, which works best for THCDF.
-
-        Returns:
-            grids : :class:`dft.gen_grid.Grids`
-                ISDF grid
         '''
         if mol is None: mol = self.mol
         if self.verbose >= logger.WARN:
             self.check_sanity()
+
+        log = logger.new_logger(self, self.verbose)
+        log.info('Set up ISDF grids with QR decomposition.')
 
         atom_grids_tab = self.gen_atomic_grids(
             mol, self.atom_grid, self.radi_method, 
             self.level, self.prune, **kwargs
             )
         
-        tmp = self.get_partition(
-            mol, atom_grids_tab, self.radii_adjust, 
-            self.atomic_radii, self.becke_scheme,
-            concat=False
-            )
-
         coords = []
         weighs = []
 
-        dm0 = None
-        aoslice = mol.aoslice_by_atom()
-        for ia, (c, w) in enumerate(zip(*tmp)):
-            nao = (lambda s: s[3] - s[2])(aoslice[ia])
-            nip = int(self.c_isdf) * nao
+        tmp = zip(
+            mol.aoslice_by_atom(), 
+            *self.get_partition(
+                mol, atom_grids_tab, self.radii_adjust, 
+                self.atomic_radii,   self.becke_scheme,
+                concat=False)
+            )
 
-            phi = numint.eval_ao(mol, c, deriv=0)
-            ng, nao = phi.shape
+        for ia, (s, c, w) in enumerate(tmp):
+            phi  = numint.eval_ao(mol, c, deriv=0)
+            phi *= (numpy.abs(w) ** 0.5)[:, None]
+            mask = 
 
-            if self.method == "kmeans":
-                ind = kmeans(
-                    c, w, nip=nip*2, 
-                    ind0=None,
-                    max_cycle=20, tol=1e-4,
-                    )
-                ind = ind[:nip]
+            nao = s[3] - s[2]
+            ng  = phi.shape[0]
 
-            elif self.method == "kmeans-density":
-                from pyscf.scf.hf import init_guess_by_atom
-                dm0 = init_guess_by_atom(mol) if dm0 is None else dm0
-                rho = numint.eval_rho(mol, phi, dm0)
-                ind = kmeans(
-                    c, rho * numpy.sqrt(w), nip=nip*2, 
-                    ind0=None,
-                    max_cycle=20, tol=1e-4,
-                    )
-                ind = ind[:nip]
-                
-            elif self.method == "qr":
-                import scipy.linalg
-                from pyscf.lib import pack_tril
+            # The cost of this method will not
+            # grow with system size, but depends
+            # on the number of AOs/grids per atom.
+            import scipy.linalg
+            from pyscf.lib import pack_tril
+            rho = numpy.einsum('Im,In->Imn', phi, phi)
+            rho = pack_tril(rho)
 
-                rho = numpy.einsum('gm,gn->gmn', phi, phi)
-                rho = pack_tril(rho)
+            q, r, perm = scipy.linalg.qr(rho.T, pivoting=True)
+            diag  = numpy.abs(numpy.diag(r))
+            d = diag / diag[0]
 
-                q, r, perm = scipy.linalg.qr(rho.T, pivoting=True)
-                ind = perm[:nip]
+            nip = int(self.c_isdf) * nao if self.c_isdf else ng
+            nip = min(nip, ng)
+            mask = numpy.where(d > self.tol)[0]
+            mask = mask if len(mask) < nip else mask[:nip]
+            nip = len(mask)
 
-            else:
-                raise KeyError("Unknown method: %s" % self.method)
-
+            ind = perm[mask]
             coords.append(c[ind])
             weighs.append(w[ind])
 
-        if self.verbose >= logger.DEBUG:
-            coord1 = numpy.vstack(self.coords)
-            coord2 = numpy.vstack(coords)
-            dump_grids(mol, coord1, coord2, "/Users/yangjunjie/Downloads/h2o-%s.log" % self.method)
+            log.info("Atom %d %s: nao = % 4d, %6d -> %4d, err = % 6.4e" % (ia, mol.atom_symbol(ia), nao, ng, nip, d[mask[-1]]))
 
         self.coords  = numpy.vstack(coords)
         self.weights = numpy.hstack(weighs)
@@ -178,6 +161,57 @@ class InterpolatingPoints(Grids):
 
         return self
     
+def build_rho(phi=None, tol=1e-8):
+    ng, nao = phi.shape
+    rho = dok_array((ng, nao * (nao + 1) // 2))
+
+    # This part remains similar; identifying non-zero elements
+    mask = numpy.where(numpy.abs(phi) > numpy.sqrt(tol))
+
+    for ig, mu in zip(*mask):
+        rho_g_mu = phi[ig, mu] * phi[ig, :(mu+1)]
+        rho_g_mu[-1] *= 0.5
+
+        # TODO: Vectorize or optimize this loop
+        munu = mu * (mu + 1) // 2 + numpy.arange(mu+1)
+        ix   = numpy.abs(rho_g_mu) > tol
+        rho[ig, munu[ix]] = rho_g_mu[ix]
+
+    return rho
+
+def cholesky(phi, tol=1e-8, log=None):
+    ngrid, nao = phi.shape
+    rho  = dok_array((ngrid, nao * (nao + 1) // 2))
+    mask = numpy.where(numpy.abs(phi) > numpy.sqrt(tol))
+
+    for ig, mu in zip(*mask):
+        rho_g_mu = phi[ig, mu] * phi[ig, :(mu+1)]
+        rho_g_mu[-1] /= numpy.sqrt(2)
+
+        munu = mu * (mu + 1) // 2 + numpy.arange(mu+1)
+        ix = numpy.abs(rho_g_mu) > tol
+        rho[ig, munu[ix]] = rho_g_mu[ix]
+
+    ss  = rho.dot(rho.T)
+    ss += ss.T
+    if log is not None:
+        log.info("nnz = % 6.4e / % 6.4e " % (ss.nnz, ss.shape[0] * ss.shape[1]))
+
+    from scipy.linalg.lapack import dpstrf
+    chol, perm, rank, info = dpstrf(ss.todense(), tol=tol) 
+
+    nisp = rank
+    if log is not None:
+        log.info("Cholesky: rank = %d / %d" % (rank, ngrid))
+
+    perm = (numpy.array(perm) - 1)[:nisp]
+
+    tril = numpy.tril_indices(nisp, k=-1)
+    chol = chol[:nisp, :nisp]
+    chol[tril] *= 0.0
+    visp = phi[perm]
+    return chol, visp
+    
 if __name__ == "__main__":
     m = pyscf.gto.M(
         atom="""
@@ -187,23 +221,54 @@ if __name__ == "__main__":
         O   -5.0373186   -5.2694388   -1.2581917
         H   -4.2054186   -5.5931034   -0.8297803
         H   -4.7347234   -4.8522045   -2.1034720
-        """, basis="sto3g", verbose=0
+        """, basis="ccpvdz", verbose=0
         )
+    
+    from pyscf.dft import Grids
+    from pyscf.dft.numint import NumInt
+    ni   = NumInt()
 
-    grids = InterpolatingPoints(m)
-    grids.level = 0
-    grids.c_isdf = 5
-    grids.method = "qr"
-    grids.build()
+    # Are "kmeans" and "kmeans-density" methods really useful?
+    for t in [1e-1]: #, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6]:
+        print("\nTolerance = % 6.4e" % t)
 
-    grids = InterpolatingPoints(m)
-    grids.level = 0
-    grids.c_isdf = 5
-    grids.method = "kmeans-density"
-    grids.build()
+        grid = InterpolatingPoints(m)
+        grid.level   = 1
+        grid.verbose = 10
+        grid.c_isdf  = None
+        grid.tol     = t
+        grid.build()
 
-    grids = InterpolatingPoints(m)
-    grids.level = 0
-    grids.c_isdf = 5
-    grids.method = "kmeans"
-    grids.build()    
+        from pyscf.lib.logger import perf_counter, process_clock
+        log = pyscf.lib.logger.Logger(verbose=5)
+        
+        phi  = ni.eval_ao(m, grid.coords)
+        phi *= (numpy.abs(grid.weights) ** 0.5)[:, None]
+        chol, visp = cholesky(phi, tol=1e-12, log=log)
+        nisp, nao = visp.shape
+        rho = build_rho(visp, tol=1e-12)
+        
+        df = pyscf.df.DF(m)
+        df.max_memory = 400
+        df.auxbasis = "weigend"
+        df.build()
+        naux = df.get_naoaux()
+
+        coul = numpy.zeros((naux, nisp))
+
+        p1 = 0
+        blksize = 10
+        for istep, chol_l in enumerate(df.loop(blksize=blksize)):
+            p0, p1 = p1, p1 + chol_l.shape[0]
+            coul[p0:p1] = rho.dot(chol_l.T).T * 2.0
+
+        ww = scipy.linalg.solve_triangular(chol.T, coul.T, lower=True).T
+        vv = scipy.linalg.solve_triangular(chol, ww.T, lower=False).T  
+
+        from pyscf.lib import unpack_tril
+        df_chol_ref = unpack_tril(df._cderi)
+        df_chol_sol = numpy.einsum("QI,Im,In->Qmn", vv, visp, visp)
+        
+        err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
+        err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol) / m.natm
+        print("Method = %s, Error = % 6.4e % 6.4e" % ("cholesky", err1, err2))
