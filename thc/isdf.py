@@ -38,7 +38,7 @@ def cholesky(phi, tol=1e-8, log=None):
     ss += ss.T
 
     from scipy.linalg.lapack import dpstrf
-    chol, perm, rank, info = dpstrf(ss.todense(), tol=tol) 
+    chol, perm, rank, info = dpstrf(ss, tol=tol) 
 
     nisp = rank
     if log is not None:
@@ -51,6 +51,7 @@ def cholesky(phi, tol=1e-8, log=None):
     chol[tril] *= 0.0
     visp = phi[perm]
     return chol, visp
+
 
 class TensorHyperConractionMixin(lib.StreamObject):
     tol = 1e-4
