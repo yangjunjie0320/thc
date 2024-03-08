@@ -123,11 +123,12 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
         
         p0 = 0
         for cderi in with_df.loop(blksize=blksize):
+            cput0 = (logger.process_clock(), logger.perf_counter())
             p1 = p0 + cderi.shape[0]
             coul[p0:p1] += (rho.dot(cderi.T)).T * 2.0
+
+            cput1 = logger.timer(self, "coulomb kernel [%d:%d]" % (p0, p1), *cput0)
             p0 += cderi.shape[0]
-            
-            cput1 = logger.timer(self, "coulomb kernel [%d:%d]" % (p0, p1), *cput1)
 
         assert 1 == 2
 
@@ -154,7 +155,7 @@ if __name__ == '__main__':
     thc = ISDF(m)
     thc.verbose = 6
     thc.grids.atom_grid = {"O": (19, 50), "H": (11, 50)}
-    thc.max_memory = 1000
+    thc.max_memory = 16000
     thc.build()
     
 
