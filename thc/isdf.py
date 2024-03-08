@@ -114,6 +114,8 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
 
         nisp, nao  = visp.shape
         risp = numpy.einsum("Im,In->Imn", visp, visp)
+        mem_rho = visp.nbytes * 1e-6
+        log.info("Memory usage for rho = % 6d MB" % mem_rho)
         cput1 = logger.timer(self, "interpolating density", *cput0)
 
         # Build the coulomb kernel
