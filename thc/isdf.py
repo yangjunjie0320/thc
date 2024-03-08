@@ -119,15 +119,19 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
         blksize = int(self.max_memory * 1e6 * 0.9 / (8 * rho.size))
         blksize = min(naux, blksize)
         blksize = max(4, blksize)
-        log.debug("blksize = %d", blksize)
+
+        cput0 = (logger.process_clock(), logger.perf_counter())
         
+        t0 = lib.logger.timer(self, "Computing the coulomb kernel", level=5)
         p0 = 0
         for cderi in with_df.loop(blksize=blksize):
             p1 = p0 + cderi.shape[0]
             coul[p0:p1] += (rho[:, mask].dot(cderi[:, mask].T)).T * 2.0
             p0 = p1
 
-            print(p0, p1, cderi.shape, rho.shape)
+            cput1 = logger.timer(self, "Computing the coulomb kernel", *cput1)
+
+        assert 1 == 2
 
         ww = scipy.linalg.solve_triangular(chol.T, coul.T, lower=True).T
         vv = scipy.linalg.solve_triangular(chol, ww.T, lower=False).T  
