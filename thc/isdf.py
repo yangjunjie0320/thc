@@ -122,13 +122,13 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
 
         cput0 = (logger.process_clock(), logger.perf_counter())
         
-        t0 = lib.logger.timer(self, "Computing the coulomb kernel", level=5)
+        t0 = (logger.process_clock(), logger.perf_counter())
         p0 = 0
+
         for cderi in with_df.loop(blksize=blksize):
             p1 = p0 + cderi.shape[0]
             coul[p0:p1] += (rho[:, mask].dot(cderi[:, mask].T)).T * 2.0
             p0 = p1
-
             cput1 = logger.timer(self, "Computing the coulomb kernel", *cput1)
 
         assert 1 == 2
