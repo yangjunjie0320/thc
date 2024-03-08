@@ -113,11 +113,12 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
         cput1 = logger.timer(self, "interpolating vectors", *cput0)
 
         nisp, nao  = visp.shape
-        rho = build_rho(visp, tol=1e-12)
+        risp = numpy.einsum("Im,In->Imn", visp, visp)
+        cput1 = logger.timer(self, "interpolating density", *cput0)
 
         # Build the coulomb kernel
         coul = numpy.zeros((naux, nisp))
-        blksize = int(self.max_memory * 1e6 * 0.9 / (8 * rho.size))
+        blksize = int(self.max_memory * 1e6 * 0.9 / (8 * risp.size))
         blksize = min(naux, blksize)
         blksize = max(4, blksize)
         
@@ -125,10 +126,12 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
         for cderi in with_df.loop(blksize=blksize):
             cput0 = (logger.process_clock(), logger.perf_counter())
             p1 = p0 + cderi.shape[0]
-            coul[p0:p1] += (rho.dot(cderi.T)).T * 2.0
+            coul[p0:p1] += (risp.dot(cderi.T)).T * 2.0
 
-            cput1 = logger.timer(self, "coulomb kernel [%d:%d]" % (p0, p1), *cput0)
+            logger.timer(self, "coulomb kernel [%d:%d]" % (p0, p1), *cput0)
             p0 += cderi.shape[0]
+
+        logger.timer(self, "coulomb kernel", *cput0)
 
         assert 1 == 2
 
