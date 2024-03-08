@@ -150,7 +150,7 @@ if __name__ == '__main__':
         )
 
     thc = ISDF(m)
-    thc.verbose = 5
+    thc.verbose = 6
     thc.grids.atom_grid = {"O": (19, 50), "H": (11, 50)}
     thc.max_memory = 1000
     thc.build()
