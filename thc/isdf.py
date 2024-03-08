@@ -103,14 +103,15 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
             self.with_df.build()
 
         self.dump_flags()
-        ovlp = lib.pack_tril(self.mol.intor("int1e_ovlp"))
-        mask = numpy.abs(ovlp) > self.tol
+
+        cput0 = (logger.process_clock(), logger.perf_counter())
 
         naux = with_df.get_naoaux()
         phi  = numint.eval_ao(self.mol, grids.coords)
         phi *= (numpy.abs(grids.weights) ** 0.5)[:, None]
-
         chol, visp = cholesky(phi, tol=1e-12, log=log)
+        cput1 = logger.timer(self, "interpolating vectors", *cput1)
+
         nisp, nao  = visp.shape
         rho = build_rho(visp, tol=1e-12)
 
@@ -120,16 +121,15 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
         blksize = min(naux, blksize)
         blksize = max(4, blksize)
 
-        cput0 = (logger.process_clock(), logger.perf_counter())
+        cput1 = (logger.process_clock(), logger.perf_counter())
         
-        t0 = (logger.process_clock(), logger.perf_counter())
         p0 = 0
-
         for cderi in with_df.loop(blksize=blksize):
             p1 = p0 + cderi.shape[0]
-            coul[p0:p1] += (rho[:, mask].dot(cderi[:, mask].T)).T * 2.0
-            p0 = p1
-            cput1 = logger.timer(self, "Computing the coulomb kernel", *cput1)
+            coul[p0:p1] += (rho.dot(cderi.T)).T * 2.0
+            p0 += cderi.shape[0]
+            
+            cput1 = logger.timer(self, "coulomb kernel [%d:%d]" % (p0, p1), *cput1)
 
         assert 1 == 2
 
