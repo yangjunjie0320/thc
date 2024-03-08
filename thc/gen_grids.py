@@ -36,6 +36,7 @@ class InterpolatingPoints(pyscf.dft.gen_grid.Grids):
                 concat=False)
             )
 
+        cput0 = (logger.process_clock(), logger.perf_counter())
         for ia, (s, c, w) in enumerate(tmp):
             phi  = numint.eval_ao(mol, c, deriv=0, shls_slice=(s[0], s[1]))
             phi *= (numpy.abs(w) ** 0.5)[:, None]
@@ -63,6 +64,7 @@ class InterpolatingPoints(pyscf.dft.gen_grid.Grids):
                     ng, nip, diag[mask[-1]]
                     )
                 )
+        cput1 = log.timer("Building Interpolating Points", *cput0)
 
         self.coords  = numpy.vstack(coords)
         self.weights = numpy.hstack(weighs)
