@@ -36,8 +36,6 @@ def cholesky(phi, tol=1e-8, log=None):
 
     ss  = rho.dot(rho.T)
     ss += ss.T
-    if log is not None:
-        log.info("nnz = % 6.4e / % 6.4e " % (ss.nnz, ss.shape[0] * ss.shape[1]))
 
     from scipy.linalg.lapack import dpstrf
     chol, perm, rank, info = dpstrf(ss.todense(), tol=tol) 
