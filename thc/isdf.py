@@ -12,7 +12,8 @@ from thc.gen_grids import InterpolatingPoints
 
 def build_rho(phi=None, tol=1e-8):
     ng, nao = phi.shape
-    rho = dok_array((ng, nao * (nao + 1) // 2))
+    rho = numpy.einsum("Im,In->Imn", phi, phi)
+    rho = lib.pack_tril(rho)
 
     # This part remains similar; identifying non-zero elements
     mask = numpy.where(numpy.abs(phi) > numpy.sqrt(tol))
@@ -30,16 +31,8 @@ def build_rho(phi=None, tol=1e-8):
 
 def cholesky(phi, tol=1e-8, log=None):
     ngrid, nao = phi.shape
-    rho  = dok_array((ngrid, nao * (nao + 1) // 2))
-    mask = numpy.where(numpy.abs(phi) > numpy.sqrt(tol))
-
-    for ig, mu in zip(*mask):
-        rho_g_mu = phi[ig, mu] * phi[ig, :(mu+1)]
-        rho_g_mu[-1] /= numpy.sqrt(2)
-
-        munu = mu * (mu + 1) // 2 + numpy.arange(mu+1)
-        ix = numpy.abs(rho_g_mu) > tol
-        rho[ig, munu[ix]] = rho_g_mu[ix]
+    rho = numpy.einsum("Im,In->Imn", phi, phi)
+    rho = lib.pack_tril(rho)
 
     ss  = rho.dot(rho.T)
     ss += ss.T
