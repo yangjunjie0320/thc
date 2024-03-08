@@ -120,8 +120,6 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
         blksize = int(self.max_memory * 1e6 * 0.9 / (8 * rho.size))
         blksize = min(naux, blksize)
         blksize = max(4, blksize)
-
-        cput1 = (logger.process_clock(), logger.perf_counter())
         
         p0 = 0
         for cderi in with_df.loop(blksize=blksize):
