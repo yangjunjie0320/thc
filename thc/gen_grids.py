@@ -36,20 +36,29 @@ class InterpolatingPoints(pyscf.dft.gen_grid.Grids):
                 concat=False)
             )
 
+        ovlp  = pyscf.lib.pack_tril(mol.intor("int1e_ovlp"))
+        indsp = numpy.abs(ovlp) > 1e-2
+        print("Number of non-zero elements in the overlap matrix: %d / %d" % (
+            numpy.count_nonzero(indsp), indsp.size
+            ))
+
         cput0 = (logger.process_clock(), logger.perf_counter())
+
         for ia, (s, c, w) in enumerate(tmp):
-            phi  = numint.eval_ao(mol, c, deriv=0, shls_slice=(s[0], s[1]))
+            phi  = numint.eval_ao(mol, c, deriv=0, shls_slice=None) # (s[0], s[1]))
             phi *= (numpy.abs(w) ** 0.5)[:, None]
-            ng  = phi.shape[0]
+            phi  = phi[numpy.linalg.norm(phi, axis=1) > self.tol]
+            ng   = phi.shape[0]
             
-            rho  = numpy.einsum("xm,xn->xmn", phi, phi)
-            rho  = pyscf.lib.pack_tril(rho)
+            rho  = numpy.einsum("xm,xn->xmn", phi, phi[:, s[2]:s[3]])
+            rho  = rho.reshape(ng, -1)
 
             q, r, perm = scipy.linalg.qr(rho.T, pivoting=True)
             diag = (lambda d: d / d[0])(numpy.abs(numpy.diag(r)))
 
             nip = int(self.c_isdf) * (s[3] - s[2]) if self.c_isdf else ng
             nip = min(nip, ng)
+
             mask = numpy.where(diag > self.tol)[0]
             mask = mask if len(mask) < nip else mask[:nip]
             nip = len(mask)
@@ -61,7 +70,7 @@ class InterpolatingPoints(pyscf.dft.gen_grid.Grids):
             log.info(
                 "Atom %d %s: nao = % 4d, %6d -> %4d, err = % 6.4e" % (
                     ia, mol.atom_symbol(ia), (s[3] - s[2]), 
-                    ng, nip, diag[mask[-1]]
+                    w.size, nip, diag[mask[-1]]
                     )
                 )
         cput1 = log.timer("Building Interpolating Points", *cput0)
@@ -102,8 +111,8 @@ if __name__ == "__main__":
         )
     
     grid = InterpolatingPoints(m)
-    grid.atom_grid = "kmeans-density"
-    grid.verbose = 10
+    grid.level = 0
+    grid.verbose = 6
     grid.c_isdf  = None
     grid.tol     = 1e-8
     grid.kernel()

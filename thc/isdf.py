@@ -123,15 +123,16 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
             p1 = p0 + cderi.shape[0]
             coul[p0:p1] += (risp.dot(cderi.T)).T * 2.0
 
-            logger.timer(self, "coulomb kernel [%d:%d]" % (p0, p1), *cput0)
+            logger.timer(self, "coulomb kernel [% 4d:% 4d]" % (p0, p1), *cput0)
             p0 += cderi.shape[0]
 
-        logger.timer(self, "coulomb kernel", *cput0)
-
-        assert 1 == 2
+        cput1 = logger.timer(self, "coulomb kernel", *cput1)
 
         ww = scipy.linalg.solve_triangular(chol.T, coul.T, lower=True).T
         vv = scipy.linalg.solve_triangular(chol, ww.T, lower=False).T  
+        cput1 = logger.timer(self, "solving linear equations", *cput1)
+
+        return vv, visp
 
     def kernel(self, *args, **kwargs):
         return super().kernel(*args, **kwargs)
@@ -147,46 +148,21 @@ if __name__ == '__main__':
         O   -5.0373186   -5.2694388   -1.2581917
         H   -4.2054186   -5.5931034   -0.8297803
         H   -4.7347234   -4.8522045   -2.1034720
-        """, basis="ccpvqz", verbose=0
+        """, basis="ccpvdz", verbose=0
         )
 
     thc = ISDF(m)
     thc.verbose = 6
-    thc.grids.atom_grid = {"O": (19, 50), "H": (11, 50)}
-    thc.max_memory = 16000
-    thc.build()
+    thc.grids.level  = 1
+    thc.grids.c_isdf = 100
+    thc.with_df.auxbasis = "ccpvdz-jkfit"
+    thc.max_memory = 100
+    vv, visp = thc.build()
+
+    from pyscf.lib import unpack_tril
+    df_chol_ref = unpack_tril(thc.with_df._cderi)
+    df_chol_sol = numpy.einsum("QI,Im,In->Qmn", vv, visp, visp)
     
-
-    # from pyscf.lib.logger import perf_counter, process_clock
-    # log = pyscf.lib.logger.Logger(verbose=5)
-    
-    # phi  = numint.eval_ao(m, grid.coords)
-    # phi *= (numpy.abs(grid.weights) ** 0.5)[:, None]
-    # chol, visp = cholesky(phi, tol=1e-12, log=log)
-    # nisp, nao = visp.shape
-    # rho = build_rho(visp, tol=1e-12)
-    
-    # df = pyscf.df.DF(m)
-    # df.max_memory = 400
-    # df.auxbasis = "weigend"
-    # df.build()
-    # naux = df.get_naoaux()
-
-    # coul = numpy.zeros((naux, nisp))
-
-    # p1 = 0
-    # blksize = 10
-    # for istep, chol_l in enumerate(df.loop(blksize=blksize)):
-    #     p0, p1 = p1, p1 + chol_l.shape[0]
-    #     coul[p0:p1] = rho.dot(chol_l.T).T * 2.0
-
-    # ww = scipy.linalg.solve_triangular(chol.T, coul.T, lower=True).T
-    # vv = scipy.linalg.solve_triangular(chol, ww.T, lower=False).T  
-
-    # from pyscf.lib import unpack_tril
-    # df_chol_ref = unpack_tril(df._cderi)
-    # df_chol_sol = numpy.einsum("QI,Im,In->Qmn", vv, visp, visp)
-    
-    # err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
-    # err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol) / m.natm
-    # print("Method = %s, Error = % 6.4e % 6.4e" % ("cholesky", err1, err2))
+    err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
+    err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol) / m.natm
+    print("Method = %s, Error = % 6.4e % 6.4e" % ("cholesky", err1, err2))
