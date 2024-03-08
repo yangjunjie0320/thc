@@ -110,7 +110,7 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
         phi  = numint.eval_ao(self.mol, grids.coords)
         phi *= (numpy.abs(grids.weights) ** 0.5)[:, None]
         chol, visp = cholesky(phi, tol=1e-12, log=log)
-        cput1 = logger.timer(self, "interpolating vectors", *cput1)
+        cput1 = logger.timer(self, "interpolating vectors", *cput0)
 
         nisp, nao  = visp.shape
         rho = build_rho(visp, tol=1e-12)
