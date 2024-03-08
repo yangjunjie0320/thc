@@ -1,6 +1,5 @@
 import pyscf, numpy, scipy
 import scipy.linalg
-from scipy.sparse import dok_array
 
 import pyscf
 from pyscf.lib import logger
@@ -38,10 +37,6 @@ class InterpolatingPoints(pyscf.dft.gen_grid.Grids):
 
         ovlp  = pyscf.lib.pack_tril(mol.intor("int1e_ovlp"))
         indsp = numpy.abs(ovlp) > 1e-2
-        print("Number of non-zero elements in the overlap matrix: %d / %d" % (
-            numpy.count_nonzero(indsp), indsp.size
-            ))
-
         cput0 = (logger.process_clock(), logger.perf_counter())
 
         for ia, (s, c, w) in enumerate(tmp):

@@ -1,6 +1,5 @@
 import numpy, scipy
 import scipy.linalg
-from scipy.sparse import dok_array
 
 import pyscf
 from pyscf import df
