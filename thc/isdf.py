@@ -9,25 +9,6 @@ from pyscf.lib import logger
 
 from thc.gen_grids import InterpolatingPoints
 
-def build_rho(phi=None, tol=1e-8):
-    ng, nao = phi.shape
-    rho = numpy.einsum("Im,In->Imn", phi, phi)
-    rho = lib.pack_tril(rho)
-
-    # This part remains similar; identifying non-zero elements
-    mask = numpy.where(numpy.abs(phi) > numpy.sqrt(tol))
-
-    for ig, mu in zip(*mask):
-        rho_g_mu = phi[ig, mu] * phi[ig, :(mu+1)]
-        rho_g_mu[-1] *= 0.5
-
-        # TODO: Vectorize or optimize this loop
-        munu = mu * (mu + 1) // 2 + numpy.arange(mu+1)
-        ix   = numpy.abs(rho_g_mu) > tol
-        rho[ig, munu[ix]] = rho_g_mu[ix]
-
-    return rho
-
 def cholesky(phi, tol=1e-8, log=None):
     ngrid, nao = phi.shape
     rho = numpy.einsum("Im,In->Imn", phi, phi)
@@ -51,11 +32,13 @@ def cholesky(phi, tol=1e-8, log=None):
     visp = phi[perm]
     return chol, visp
 
-
 class TensorHyperConractionMixin(lib.StreamObject):
     tol = 1e-4
     max_memory = 1000
     verbose = 5
+
+    vv = None
+    xip = None
 
 class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
     def __init__(self, mol):
@@ -100,42 +83,38 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
         naux = with_df.get_naoaux()
         phi  = numint.eval_ao(self.mol, grids.coords)
         phi *= (numpy.abs(grids.weights) ** 0.5)[:, None]
-        chol, visp = cholesky(phi, tol=1e-12, log=log)
+        chol, xip = cholesky(phi, tol=1e-12, log=log)
+        nip, nao  = xip.shape
         cput1 = logger.timer(self, "interpolating vectors", *cput0)
 
-        nisp, nao  = visp.shape
-        risp = numpy.einsum("Im,In->Imn", visp, visp)
-        risp = lib.pack_tril(risp)
-        mem_rho = visp.nbytes * 1e-6
-        log.info("Memory usage for rho = % 6d MB" % mem_rho)
-        cput1 = logger.timer(self, "interpolating density", *cput0)
-
         # Build the coulomb kernel
-        coul = numpy.zeros((naux, nisp))
-        blksize = int(self.max_memory * 1e6 * 0.9 / (8 * risp.size))
-        blksize = min(naux, blksize)
+        # coul = numpy.einsum("Qmn,Im,In->QI", cderi, xip, xip)
+        coul = numpy.zeros((naux, nip))
+        blksize = int(self.max_memory * 1e6 * 0.5 / (8 * nao ** 2))
         blksize = max(4, blksize)
-        
-        p0 = 0
+
+        a0 = a1 = 0 # slice for auxilary basis
         for cderi in with_df.loop(blksize=blksize):
-            cput0 = (logger.process_clock(), logger.perf_counter())
-            p1 = p0 + cderi.shape[0]
-            coul[p0:p1] += (risp.dot(cderi.T)).T * 2.0
+            a1 = a0 + cderi.shape[0]
 
-            logger.timer(self, "coulomb kernel [% 4d:% 4d]" % (p0, p1), *cput0)
-            p0 += cderi.shape[0]
+            for i0, i1 in lib.prange(0, nip, blksize): # slice for interpolating vectors
+                cput = (logger.process_clock(), logger.perf_counter())
+                xx = lib.pack_tril(numpy.einsum("Im,In->Imn", xip[i0:i1], xip[i0:i1]))
+                coul[a0:a1, i0:i1] += (xx.dot(cderi.T)).T * 2.0
+                logger.timer(self, "coulomb kernel [%4d:%4d, %4d:%4d]" % (a0, a1, i0, i1), *cput)
+                xx = None
 
+            a0 = a1
         cput1 = logger.timer(self, "coulomb kernel", *cput1)
 
         ww = scipy.linalg.solve_triangular(chol.T, coul.T, lower=True).T
-        vv = scipy.linalg.solve_triangular(chol, ww.T, lower=False).T  
+        vv = scipy.linalg.solve_triangular(chol, ww.T, lower=False).T
         cput1 = logger.timer(self, "solving linear equations", *cput1)
 
-        return vv, visp
+        self.vv = vv
+        self.xip = xip
+        return vv, xip
 
-    def kernel(self, *args, **kwargs):
-        return super().kernel(*args, **kwargs)
-    
 ISDF = InterpolativeSeparableDensityFitting
 
 if __name__ == '__main__':
@@ -148,20 +127,23 @@ if __name__ == '__main__':
         H   -4.2054186   -5.5931034   -0.8297803
         H   -4.7347234   -4.8522045   -2.1034720
         """, basis="ccpvdz", verbose=0
-        )
+    )
 
     thc = ISDF(m)
     thc.verbose = 6
-    thc.grids.level  = 1
-    thc.grids.c_isdf = 100
-    thc.with_df.auxbasis = "ccpvdz-jkfit"
-    thc.max_memory = 100
-    vv, visp = thc.build()
+    thc.grids.level  = 0
+    thc.grids.c_isdf = 30
+    thc.with_df.auxbasis = "weigend"
+    thc.max_memory = 2000
+    thc.build()
+
+    vv = thc.vv
+    xip_ao = thc.xip
 
     from pyscf.lib import unpack_tril
     df_chol_ref = unpack_tril(thc.with_df._cderi)
-    df_chol_sol = numpy.einsum("QI,Im,In->Qmn", vv, visp, visp)
-    
+    df_chol_sol = numpy.einsum("QI,Im,In->Qmn", vv, xip_ao, xip_ao)
+
     err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
     err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol) / m.natm
     print("Method = %s, Error = % 6.4e % 6.4e" % ("cholesky", err1, err2))
