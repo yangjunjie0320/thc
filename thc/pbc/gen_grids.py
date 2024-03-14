@@ -3,7 +3,7 @@ import scipy.linalg
 
 import pyscf
 from pyscf.lib import logger
-from pyscf.dft import numint
+from pyscf.pbc.dft import numint
 
 from pyscf import dft, lib
 import pyscf.dft.gen_grid
@@ -13,6 +13,7 @@ from pyscf.pbc.gto import eval_gto as pbc_eval_gto
 libpbc = lib.load_library('libpbc')
 
 import thc
+import thc.mol.gen_grids
 
 # modified from pyscf.dft.gen_grid.gen_partition and pyscf.pbc.dft.gen_grid.get_becke_grids
 def gen_partition(cell, atom_grid={}, radi_method=dft.radi.gauss_chebyshev,
@@ -119,15 +120,14 @@ def gen_partition(cell, atom_grid={}, radi_method=dft.radi.gauss_chebyshev,
     if concat:
         coord_all = numpy.vstack(coord_all)
         weigh_all = numpy.hstack(weigh_all)
-    
+
+    logger.info(cell, "Total number of grids %d", len(numpy.hstack(weigh_all)))
     return coord_all, weigh_all
 
-class InterpolatingPoints(thc.mol.InterpolatingPoints):
+class InterpolatingPoints(thc.mol.gen_grids.InterpolatingPoints):
     def __init__(self, cell):
         self.cell = cell
-        thc.mol.InterpolatingPoints.__init__(self, cell)
-
-    get_partition = gen_partition
+        thc.mol.gen_grids.InterpolatingPoints.__init__(self, cell)
 
     def make_mask(self, cell, coords, relativity=0, shls_slice=None, verbose=None):
         if cell is None: cell = self.cell
@@ -147,7 +147,7 @@ class InterpolatingPoints(thc.mol.InterpolatingPoints):
 
         grid = zip(
             cell.aoslice_by_atom(),
-            *self.get_partition(
+            *gen_partition(
                 cell, self.atom_grid,
                 radi_method=self.radi_method,
                 level=self.level,
@@ -170,7 +170,11 @@ class InterpolatingPoints(thc.mol.InterpolatingPoints):
             phi  = phi[numpy.linalg.norm(phi, axis=1) > self.tol]
             ng   = phi.shape[0]
             
-            phi_pair  = numpy.einsum("xm,xn->xmn", phi, phi[:, s[2]:s[3]])
+            phi_pair = None
+            if phi.shape[1] <= 10:
+                phi_pair  = numpy.einsum("xm,xn->xmn", phi, phi)
+            else:
+                phi_pair  = numpy.einsum("xm,xn->xmn", phi, phi[:, s[2]:s[3]])
             phi_pair  = phi_pair.reshape(ng, -1)
 
             q, r, perm = scipy.linalg.qr(phi_pair.T, pivoting=True)
@@ -221,10 +225,10 @@ if __name__ == "__main__":
 
     cell.atom = '''He 0.0000 0.0000 1.0000
                    He 1.0000 0.0000 1.0000'''
-    cell.basis = "sto3g"
+    cell.basis = "631g*"
     cell.build()
 
-    grid = InterpolatingPoints(m)
+    grid = InterpolatingPoints(cell)
     grid.level = 0
     grid.verbose = 6
     grid.c_isdf  = 20

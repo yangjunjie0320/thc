@@ -10,7 +10,7 @@ class InterpolatingPoints(pyscf.dft.gen_grid.Grids):
     tol = 1e-8
     c_isdf = 50
     alignment = 0
-    
+
     def build(self, mol=None, with_non0tab=False, sort_grids=True, **kwargs):
         '''
         Build ISDF grids.
