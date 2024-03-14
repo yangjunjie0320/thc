@@ -7,7 +7,7 @@ from pyscf import lib
 from pyscf.dft import numint
 from pyscf.lib import logger
 
-from thc.gen_grids import InterpolatingPoints
+from thc.mol.gen_grids import InterpolatingPoints
 
 def cholesky(phi, tol=1e-8, log=None):
     ngrid, nao = phi.shape
@@ -129,7 +129,8 @@ if __name__ == '__main__':
         """, basis="ccpvdz", verbose=0
     )
 
-    thc = ISDF(m)
+    import thc
+    thc = thc.ISDF(m)
     thc.verbose = 6
     thc.grids.level  = 0
     thc.grids.c_isdf = 30
