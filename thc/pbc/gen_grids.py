@@ -16,7 +16,7 @@ import thc
 import thc.mol.gen_grids
 
 # modified from pyscf.dft.gen_grid.gen_partition and pyscf.pbc.dft.gen_grid.get_becke_grids
-def gen_partition(cell, atom_grid={}, radi_method=dft.radi.gauss_chebyshev,
+def gen_partition(grid, cell, atom_grid={}, radi_method=dft.radi.gauss_chebyshev,
                   level=3, concat=True, prune=nwchem_prune):
     '''real-space grids using Becke scheme
 
@@ -129,6 +129,8 @@ class InterpolatingPoints(thc.mol.gen_grids.InterpolatingPoints):
         self.cell = cell
         thc.mol.gen_grids.InterpolatingPoints.__init__(self, cell)
 
+    gen_partition = gen_partition
+
     def make_mask(self, cell, coords, relativity=0, shls_slice=None, verbose=None):
         if cell is None: cell = self.cell
         if coords is None: coords = self.coords
@@ -139,15 +141,15 @@ class InterpolatingPoints(thc.mol.gen_grids.InterpolatingPoints):
         '''
         Build ISDF grids.
         '''
-        if cell is None: cell = self.mol
+        if cell is None: cell = self.cell
         log = logger.new_logger(self, self.verbose)
-        log.info('\nSet up ISDF grids with QR decomposition.')
+        log.info('\nSet up interpolating points with Pivoted Cholesky decomposition.')
         if self.c_isdf is not None:
             log.info('c_isdf = %d', self.c_isdf)
 
         grid = zip(
             cell.aoslice_by_atom(),
-            *gen_partition(
+            *self.gen_partition(
                 cell, self.atom_grid,
                 radi_method=self.radi_method,
                 level=self.level,
@@ -167,33 +169,22 @@ class InterpolatingPoints(thc.mol.gen_grids.InterpolatingPoints):
 
             phi  = numint.eval_ao(cell, c, deriv=0, shls_slice=None)
             phi *= (numpy.abs(w) ** 0.5)[:, None]
-            phi  = phi[numpy.linalg.norm(phi, axis=1) > self.tol]
             ng   = phi.shape[0]
-            
-            phi_pair = None
-            if phi.shape[1] <= 10:
-                phi_pair  = numpy.einsum("xm,xn->xmn", phi, phi)
-            else:
-                phi_pair  = numpy.einsum("xm,xn->xmn", phi, phi[:, s[2]:s[3]])
-            phi_pair  = phi_pair.reshape(ng, -1)
-
-            q, r, perm = scipy.linalg.qr(phi_pair.T, pivoting=True)
-            diag = (lambda d: d / d[0])(numpy.abs(numpy.diag(r)))
 
             nip = int(self.c_isdf) * nao if self.c_isdf else ng
             nip = min(nip, ng)
+            
+            from pyscf.lib import pivoted_cholesky
+            phi4 = pyscf.lib.dot(phi, phi.T) ** 2
+            chol, perm, rank = pivoted_cholesky(phi4, tol=self.tol, lower=False)
+            mask = perm[:nip]
 
-            mask = numpy.where(diag > self.tol)[0]
-            mask = mask if len(mask) < nip else mask[:nip]
-            nip = len(mask)
-
-            ind = perm[mask]
-            coords.append(c[ind])
-            weights.append(w[ind])
+            coords.append(c[mask])
+            weights.append(w[mask])
 
             log.info(
-                "Atom %d %s: nao = % 4d, %6d -> %4d, err = % 6.4e" % (
-                    ia, sym, nao, w.size, nip, diag[mask[-1]]
+                "Atom %d %s: nao = % 4d, %6d -> %4d" % (
+                    ia, sym, nao, w.size, nip
                 )
             )
 
@@ -211,24 +202,25 @@ class InterpolatingPoints(thc.mol.gen_grids.InterpolatingPoints):
         log.info('Total number of interpolating points = %d', len(self.weights))
         return self
 
-# Grids = InterpolatingPoints
+Grids = InterpolatingPoints
 
 if __name__ == "__main__":
-    n = 7
-    cell = pyscf.pbc.gto.Cell()
-    cell.a = '''
-    4.000 0.0000 0.0000
-    0.000 4.0000 0.0000
-    0.000 0.0000 4.0000
-    '''
-    cell.mesh = [n, n, n]
+    c   = pyscf.pbc.gto.Cell()
+    c.a = numpy.eye(3) * 3.5668
+    c.atom = '''C     0.0000  0.0000  0.0000
+                C     0.8917  0.8917  0.8917
+                C     1.7834  1.7834  0.0000
+                C     2.6751  2.6751  0.8917
+                C     1.7834  0.0000  1.7834
+                C     2.6751  0.8917  2.6751
+                C     0.0000  1.7834  1.7834
+                C     0.8917  2.6751  2.6751'''
+    c.basis  = 'gth-szv'
+    c.pseudo = 'gth-pade'
+    c.verbose = 4
+    c.build()
 
-    cell.atom = '''He 0.0000 0.0000 1.0000
-                   He 1.0000 0.0000 1.0000'''
-    cell.basis = "631g*"
-    cell.build()
-
-    grid = InterpolatingPoints(cell)
+    grid = InterpolatingPoints(c)
     grid.level = 0
     grid.verbose = 6
     grid.c_isdf  = 20

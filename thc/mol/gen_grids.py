@@ -6,6 +6,7 @@ from pyscf.lib import logger
 from pyscf.dft import numint
 import pyscf.dft.gen_grid
 
+from pyscf.dft import gen_grid
 class InterpolatingPoints(pyscf.dft.gen_grid.Grids):
     tol = 1e-8
     c_isdf = 50
@@ -17,7 +18,7 @@ class InterpolatingPoints(pyscf.dft.gen_grid.Grids):
         '''
         if mol is None: mol = self.mol
         log = logger.new_logger(self, self.verbose)
-        log.info('\nSet up ISDF grids with QR decomposition.')
+        log.info('\nSet up interpolating points with Pivoted Cholesky decomposition.')
         if self.c_isdf is not None:
             log.info('c_isdf = %d', self.c_isdf)
 
@@ -46,29 +47,22 @@ class InterpolatingPoints(pyscf.dft.gen_grid.Grids):
 
             phi  = numint.eval_ao(mol, c, deriv=0, shls_slice=None)
             phi *= (numpy.abs(w) ** 0.5)[:, None]
-            phi  = phi[numpy.linalg.norm(phi, axis=1) > self.tol]
             ng   = phi.shape[0]
-            
-            phi_pair  = numpy.einsum("xm,xn->xmn", phi, phi[:, s[2]:s[3]])
-            phi_pair  = phi_pair.reshape(ng, -1)
-
-            q, r, perm = scipy.linalg.qr(phi_pair.T, pivoting=True)
-            diag = (lambda d: d / d[0])(numpy.abs(numpy.diag(r)))
 
             nip = int(self.c_isdf) * nao if self.c_isdf else ng
             nip = min(nip, ng)
+            
+            from pyscf.lib import pivoted_cholesky
+            phi4 = pyscf.lib.dot(phi, phi.T) ** 2
+            chol, perm, rank = pivoted_cholesky(phi4, tol=self.tol, lower=False)
+            mask = perm[:nip]
 
-            mask = numpy.where(diag > self.tol)[0]
-            mask = mask if len(mask) < nip else mask[:nip]
-            nip = len(mask)
-
-            ind = perm[mask]
-            coords.append(c[ind])
-            weights.append(w[ind])
+            coords.append(c[mask])
+            weights.append(w[mask])
 
             log.info(
-                "Atom %d %s: nao = % 4d, %6d -> %4d, err = % 6.4e" % (
-                    ia, sym, nao, w.size, nip, diag[mask[-1]]
+                "Atom %d %s: nao = % 4d, %6d -> %4d" % (
+                    ia, sym, nao, w.size, nip
                 )
             )
 
@@ -106,12 +100,12 @@ if __name__ == "__main__":
         O   -5.0373186   -5.2694388   -1.2581917
         H   -4.2054186   -5.5931034   -0.8297803
         H   -4.7347234   -4.8522045   -2.1034720
-        """, basis="ccpvdz", verbose=0
+        """, basis="ccpvqz", verbose=0
     )
 
     grid = InterpolatingPoints(m)
     grid.level = 0
     grid.verbose = 6
-    grid.c_isdf  = 20
+    grid.c_isdf  = 10
     grid.tol     = 1e-8
     grid.kernel()

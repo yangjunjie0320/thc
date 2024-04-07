@@ -9,16 +9,12 @@ from pyscf.lib import logger
 
 from thc.mol.gen_grids import InterpolatingPoints
 
-def cholesky(phi, tol=1e-8, log=None):
-    ngrid, nao = phi.shape
-    rho = numpy.einsum("Im,In->Imn", phi, phi)
-    rho = lib.pack_tril(rho)
-
-    ss  = rho.dot(rho.T)
-    ss += ss.T
+def cholesky(x, tol=1e-8, log=None):
+    ngrid, nao = x.shape
+    x4 = lib.dot(x, x.T) ** 2
 
     from scipy.linalg.lapack import dpstrf
-    chol, perm, rank, info = dpstrf(ss, tol=tol) 
+    chol, perm, rank, info = dpstrf(x4, tol=tol)
 
     nisp = rank
     if log is not None:
@@ -29,8 +25,7 @@ def cholesky(phi, tol=1e-8, log=None):
     tril = numpy.tril_indices(nisp, k=-1)
     chol = chol[:nisp, :nisp]
     chol[tril] *= 0.0
-    visp = phi[perm]
-    return chol, visp
+    return chol, x[perm]
 
 class TensorHyperConractionMixin(lib.StreamObject):
     tol = 1e-4
@@ -40,7 +35,7 @@ class TensorHyperConractionMixin(lib.StreamObject):
     vv = None
     xip = None
 
-class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
+class LeastSquareFitting(TensorHyperConractionMixin):
     def __init__(self, mol):
         self.mol = mol
         self.with_df = df.DF(mol)
@@ -83,8 +78,8 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
         naux = with_df.get_naoaux()
         phi  = numint.eval_ao(self.mol, grids.coords)
         phi *= (numpy.abs(grids.weights) ** 0.5)[:, None]
-        chol, xip = cholesky(phi, tol=1e-12, log=log)
-        nip, nao  = xip.shape
+        chol, xx = cholesky(phi, tol=self.tol, log=log)
+        nip, nao  = xx.shape
         cput1 = logger.timer(self, "interpolating vectors", *cput0)
 
         # Build the coulomb kernel
@@ -98,24 +93,31 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
             a1 = a0 + cderi.shape[0]
 
             for i0, i1 in lib.prange(0, nip, blksize): # slice for interpolating vectors
+                # TODO: sum over only the significant shell pairs
                 cput = (logger.process_clock(), logger.perf_counter())
-                xx = lib.pack_tril(numpy.einsum("Im,In->Imn", xip[i0:i1], xip[i0:i1]))
-                coul[a0:a1, i0:i1] += (xx.dot(cderi.T)).T * 2.0
+
+                ind = numpy.arange(nao)
+                x2  = xx[i0:i1, :, numpy.newaxis] * xx[i0:i1, numpy.newaxis, :]
+                x2  = lib.pack_tril(x2 + x2.transpose(0, 2, 1))
+                x2[:, ind * (ind + 1) // 2 + ind] *= 0.5
+                coul[a0:a1, i0:i1] += pyscf.lib.dot(cderi, x2.T)
                 logger.timer(self, "coulomb kernel [%4d:%4d, %4d:%4d]" % (a0, a1, i0, i1), *cput)
-                xx = None
+                x2 = None
 
             a0 = a1
+
         cput1 = logger.timer(self, "coulomb kernel", *cput1)
 
         ww = scipy.linalg.solve_triangular(chol.T, coul.T, lower=True).T
         vv = scipy.linalg.solve_triangular(chol, ww.T, lower=False).T
         cput1 = logger.timer(self, "solving linear equations", *cput1)
+        logger.timer(self, "LS-THC", *cput0)
 
         self.vv = vv
-        self.xip = xip
-        return vv, xip
+        self.xx = xx
+        return vv, xx
 
-ISDF = InterpolativeSeparableDensityFitting
+LS = LeastSquareFitting
 
 if __name__ == '__main__':
     m = pyscf.gto.M(
@@ -130,20 +132,21 @@ if __name__ == '__main__':
     )
 
     import thc
-    thc = thc.ISDF(m)
+    thc = thc.LS(m)
     thc.verbose = 6
+    thc.tol = 1e-16
     thc.grids.level  = 0
-    thc.grids.c_isdf = 30
+    thc.grids.c_isdf = 20
     thc.with_df.auxbasis = "weigend"
     thc.max_memory = 2000
     thc.build()
 
     vv = thc.vv
-    xip_ao = thc.xip
+    xx = thc.xx
 
     from pyscf.lib import unpack_tril
     df_chol_ref = unpack_tril(thc.with_df._cderi)
-    df_chol_sol = numpy.einsum("QI,Im,In->Qmn", vv, xip_ao, xip_ao)
+    df_chol_sol = numpy.einsum("QI,Im,In->Qmn", vv, xx, xx, optimize=True)
 
     err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
     err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol) / m.natm
