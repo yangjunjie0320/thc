@@ -79,7 +79,7 @@ class LeastSquareFitting(TensorHyperConractionMixin):
         phi  = numint.eval_ao(self.mol, grids.coords)
         phi *= (numpy.abs(grids.weights) ** 0.5)[:, None]
         chol, xx = cholesky(phi, tol=self.tol, log=log)
-        nip, nao  = xx.shape
+        nip, nao = xx.shape
         cput1 = logger.timer(self, "interpolating vectors", *cput0)
 
         # Build the coulomb kernel

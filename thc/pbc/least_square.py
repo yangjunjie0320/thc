@@ -1,3 +1,4 @@
+import pyscf.pbc
 import numpy, scipy
 import scipy.linalg
 
@@ -50,65 +51,73 @@ class LeastSquareFitting(TensorHyperConractionMixin):
 
         cput0 = (logger.process_clock(), logger.perf_counter())
 
+        ovlp_diag = numpy.diag(self.cell.pbc_intor("int1e_ovlp"))
+
         naux = with_df.get_naoaux()
-        import sys
-        phi  = numint.eval_ao(self.mol, grids.coords)
-        # numpy.savetxt(sys.stdout, phi[:10, :10], fmt="% 12.8f", delimiter=",")
+        phi = self.cell.pbc_eval_gto("GTOval", grids.coords)
         phi *= (numpy.abs(grids.weights) ** 0.5)[:, None]
-        # numpy.savetxt(sys.stdout, phi[:10, :10], fmt="% 12.8f", delimiter=",")
-        # chol, xx = cholesky(phi, tol=self.tol, log=log)
+        phi *= 1 / numpy.sqrt(ovlp_diag[None, :])
 
-        xx = phi
-        print(xx)
+        chol, xx = cholesky(phi, tol=1e-8, log=log)
+        nip, nao  = xx.shape
+        cput1 = logger.timer(self, "interpolating vectors", *cput0)
 
-        x4 = lib.dot(xx, xx.T) ** 2
-        assert numpy.allclose(x4, x4.T)
+        rho_ref = numpy.einsum("gm,gn->gmn", phi, phi)
 
-        u, s, vh = scipy.linalg.svd(x4)
-        numpy.savetxt(sys.stdout, x4, fmt="% 6.4e", delimiter=",", header="s")
 
-        x4inv = numpy.linalg.pinv(x4)
-        print("x4 = ", x4)
-        print("x4inv = ", x4inv)
-        print(x4 @ x4inv)
+        zeta = lib.dot(phi, phi.T)
+        print(numpy.abs(zeta).min(), numpy.abs(zeta).max())
+
+        wsqrt = numpy.abs(grids.weights) ** 0.5
+        print(wsqrt.min(), wsqrt.max())
         assert 1 == 2
+ 
+        from pyscf.lib.scipy_helper import pivoted_cholesky
+        chol, perm, rank = pivoted_cholesky(zeta, lower=False, tol=1e-12)
+        mask = perm # [:400]
 
-        import sys
-        numpy.savetxt(sys.stdout, x4[:10, :10], fmt="% 12.8f", delimiter=",", header="x4")
-        mask = s > 1e-8
-        print("Number of significant singular values: %d / %d" % (numpy.sum(mask), len(mask)))
-        assert numpy.allclose(u @ numpy.diag(s) @ vh, x4)
-        # x4inv = vh[mask].T @ numpy.diag(1.0 / s[mask]) @ u[mask, :].T
-        x4inv = scipy.linalg.pinvh(x4)
+        xx = phi[mask]
+        nip = xx.shape[0]
+        chol = chol[:nip, :nip]
 
-        x4_dot_x4inv = numpy.diag(s) @ vh @ vh[mask].T @ numpy.diag(1.0 / s[mask])
-        assert numpy.allclose(vh @ vh.T, numpy.eye(vh.shape[0]))
-        assert numpy.allclose(u @ u.T, numpy.eye(u.shape[0]))
-        assert numpy.allclose(x4_dot_x4inv, numpy.eye(x4_dot_x4inv.shape[0])[:, :3])
-       
+        df_chol_ref = numpy.zeros((naux, nao, nao))
+        a0 = a1 = 0 # slice for auxilary basis
+        from pyscf.lib import pack_tril, unpack_tril
+        for cderi in with_df.loop(blksize=20):
+            a1 = a0 + cderi.shape[0]
+            df_chol_ref[a0:a1] = unpack_tril(cderi)
 
-        numpy.savetxt(sys.stdout, x4_dot_x4inv[:20, :20], fmt="% 12.8f", delimiter=",", header="x4 @ x4inv")
-
-        numpy.savetxt(sys.stdout, u[:10, :10], fmt="% 12.8f", delimiter=",", header="u")
-
-        print((u @ x4_dot_x4inv).shape, (u[:3]).shape)
-        x4_dot_x4inv = u @ x4_dot_x4inv @ (u[:, :3]).T
-        
-        numpy.savetxt(sys.stdout, u[:10, :10], fmt="% 12.8f", delimiter=",", header="u")
-        numpy.savetxt(sys.stdout, x4_dot_x4inv[:10, :10], fmt="% 12.8f", delimiter=",", header="x4 @ x4inv")
-        assert 1 == 2
-
-        # x4_dot_x4inv = x4inv @ x4
-        # numpy.savetxt(sys.stdout, x4_dot_x4inv[:10, :10], fmt="% 12.8f", delimiter=",", header="x4 @ x4inv")
+ 
+        # u, s, vh = scipy.linalg.svd(x2)
+        # numpy.savetxt(self.cell.stdout, s, fmt="% 6.4e", header="Singular values", delimiter=",")
         # assert 1 == 2
 
-        # nip, nao  = xx.shape
-        # cput1 = logger.timer(self, "interpolating vectors", *cput0)
+        rhs = pack_tril(df_chol_ref)
+        # print("rhs = ", rhs.shape)
+        # print("x2 = ", x2.shape)
+        # a = scipy.linalg.lstsq(x2.T, rhs.T)[0]
+        # print("a = ", a.shape)
+        # err = numpy.linalg.norm(rhs.T - x2.T @ a)
+        # print("Error = % 6.4e" % err)
 
-        # # Build the coulomb kernel
-        # # coul = numpy.einsum("Qmn,Im,In->QI", cderi, xip, xip)
-        # # coul = numpy.zeros((naux, nip))
-        # cderi_full = numpy.zeros((naux, nao, nao))
+        x2 = numpy.einsum("Im,In->Imn", xx, xx)
+        x2 = lib.pack_tril(x2)
+        x2inv = scipy.linalg.pinv(x2)
+    
+        a = (rhs @ x2inv)
+        err = numpy.linalg.norm(rhs - a @ x2)
+        print("Error = % 6.4e" % err)
+
+        # zz = zeta[mask][:, mask]
+        # zzinv, rank = scipy.linalg.pinv(zz, return_rank=True)
+        # theta = zzinv @ zeta[mask]
+
+        # rho_sol = numpy.einsum("Ig,Im,In->gmn", theta, xx, xx)
+
+        # err = numpy.linalg.norm(rho_ref - rho_sol)
+        # print("Error = % 6.4e" % err)
+
+        # coul = numpy.zeros((naux, nip))
         # blksize = int(self.max_memory * 1e6 * 0.5 / (8 * nao ** 2))
         # blksize = max(4, blksize)
 
@@ -118,73 +127,87 @@ class LeastSquareFitting(TensorHyperConractionMixin):
 
         #     for i0, i1 in lib.prange(0, nip, blksize): # slice for interpolating vectors
         #         # TODO: sum over only the significant shell pairs
-        #         # cput = (logger.process_clock(), logger.perf_counter())
+        #         cput = (logger.process_clock(), logger.perf_counter())
 
-        #         # ind = numpy.arange(nao)
-        #         # x2  = xx[i0:i1, :, numpy.newaxis] * xx[i0:i1, numpy.newaxis, :]
-        #         # x2  = lib.pack_tril(x2 + x2.transpose(0, 2, 1))
-        #         # x2[:, ind * (ind + 1) // 2 + ind] *= 0.5
-        #         # coul[a0:a1, i0:i1] += pyscf.lib.dot(cderi, x2.T)
-        #         # logger.timer(self, "coulomb kernel [%4d:%4d, %4d:%4d]" % (a0, a1, i0, i1), *cput)
-        #         # x2 = None
-                
-        #         cderi_full[a0:a1] = lib.unpack_tril(cderi)
-        #         print(lib.unpack_tril(cderi).dtype)
+        #         ind = numpy.arange(nao)
+        #         x2  = xx[i0:i1, :, numpy.newaxis] * xx[i0:i1, numpy.newaxis, :]
+        #         x2  = lib.pack_tril(x2 + x2.transpose(0, 2, 1))
+        #         x2[:, ind * (ind + 1) // 2 + ind] *= 0.5
+        #         coul[a0:a1, i0:i1] += pyscf.lib.dot(cderi, x2.T)
+        #         logger.timer(self, "coulomb kernel [%4d:%4d, %4d:%4d]" % (a0, a1, i0, i1), *cput)
+        #         x2 = None
 
         #     a0 = a1
 
         # cput1 = logger.timer(self, "coulomb kernel", *cput1)
-        # print(cderi_full.shape)
-        # coul = numpy.einsum("Qmn,Im,In->QI", cderi_full, xx, xx, optimize=True)
-        # vv = coul @ x4inv
-        # vv = scipy.linalg.solve_triangular(chol, coul.T, lower=False).T
-        # assert 1 == 2
 
         # ww = scipy.linalg.solve_triangular(chol.T, coul.T, lower=True).T
         # vv = scipy.linalg.solve_triangular(chol, ww.T, lower=False).T
         # cput1 = logger.timer(self, "solving linear equations", *cput1)
         # logger.timer(self, "LS-THC", *cput0)
 
-        # self.vv = vv
-        # self.xx = xx
-        # return vv, xx
+        self.vv = a
+        self.xx = xx
+        return self.vv, self.xx
 
 LS = LeastSquareFitting
 
 if __name__ == '__main__':
     c = pyscf.pbc.gto.Cell()
-    c.atom = """
-    He 2.000000 2.000000 2.000000
-    He 2.000000 2.000000 4.000000
-    """
-    c.a = numpy.diag([4, 4, 6])
-    c.basis = "sto3g"
-    c.verbose = 0
+    c.atom = '''C     0.      0.      0.    
+                C     0.8917  0.8917  0.8917
+                C     1.7834  1.7834  0.    
+                C     2.6751  2.6751  0.8917
+                C     1.7834  0.      1.7834
+                C     2.6751  0.8917  2.6751
+                C     0.      1.7834  1.7834
+                C     0.8917  2.6751  2.6751'''
+    c.basis = 'gth-szv'
+    c.pseudo = 'gth-pade'
+    c.a = numpy.eye(3) * 3.5668
+    c.unit = 'aa'
     c.build()
 
     import thc
     thc = thc.LS(c)
     thc.verbose = 6
     thc.tol = 1e-10
-    thc.grids.c_isdf = 2
-
-    thc.with_df.build()
-    thc.with_df._cderi = "/Users/yangjunjie/Downloads/cderi.h5"
+    thc.grids.c_isdf = 10
     thc.max_memory = 2000
+
+    # thc.grids.coords = c.gen_uniform_grids([10, ] * 3)
+    # thc.grids.weights = (lambda ng: numpy.ones(ng) * c.vol/ng)(thc.grids.coords.shape[0])
+    thc.with_df._cderi = "/Users/yangjunjie/Downloads/gdf.h5"
     thc.build()
 
-    # vv = thc.vv
-    # xx = thc.xx
+    vv = thc.vv
+    xx = thc.xx
 
-    # from pyscf.lib import unpack_tril
-    # df_chol_sol = numpy.einsum("QI,Im,In->Qmn", vv, xx, xx, optimize=True)
+    print("vv = ", vv.shape)
+    print("xx = ", xx.shape)
 
-    # df_chol_ref = numpy.zeros_like(df_chol_sol)
-    # a0 = a1 = 0 # slice for auxilary basis
-    # for cderi in thc.with_df.loop(blksize=20):
-    #     a1 = a0 + cderi.shape[0]
-    #     df_chol_ref[a0:a1] = unpack_tril(cderi)
+    from pyscf.lib import pack_tril, unpack_tril
+    df_chol_sol = numpy.einsum("QI,Im,In->Qmn", vv, xx, xx, optimize=True)
 
-    # err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
-    # err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol) / c.natm
-    # print("Method = %s, Error = % 6.4e % 6.4e" % ("cholesky", err1, err2))
+    df_chol_ref = numpy.zeros_like(df_chol_sol)
+    a0 = a1 = 0 # slice for auxilary basis
+    for cderi in thc.with_df.loop(blksize=20):
+        a1 = a0 + cderi.shape[0]
+        df_chol_ref[a0:a1] = unpack_tril(cderi)
+
+    df_chol_ref = pack_tril(df_chol_ref)
+    # u, s, vh = scipy.linalg.svd(df_chol_ref)
+    # numpy.savetxt(c.stdout, s, fmt="% 6.4e", header="Singular values", delimiter=",")
+
+    df_chol_sol = pack_tril(df_chol_sol)
+
+    # print("df_chol_ref = ", df_chol_ref.shape)
+    # numpy.savetxt(c.stdout, df_chol_ref[:20, :10], fmt="% 8.4e", header="Reference Cholesky factor", delimiter=",")
+
+    # print("df_chol_sol = ", df_chol_sol.shape)
+    # numpy.savetxt(c.stdout, df_chol_sol[:20, :10], fmt="% 8.4e", header="Solution Cholesky factor", delimiter=",")
+
+
+    err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
+    err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol) / c.natm
+    print("Method = %s, Error = % 6.4e % 6.4e" % ("cholesky", err1, err2))
