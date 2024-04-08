@@ -11,6 +11,44 @@ from pyscf.lib import logger
 from thc.pbc.gen_grids import InterpolatingPoints
 from thc.mol.least_square import cholesky, TensorHyperConractionMixin
 
+def _fitting1(x, df_obj):
+    print("This method is N6, shall only be used for test.")
+
+    ng, nao = x.shape
+    naux = df_obj.get_naoaux()
+
+    from pyscf.lib import pack_tril, unpack_tril
+    x2 = numpy.einsum("gm,gn->gmn", x, x)
+    x2 = pack_tril(x2)
+    nao2 = x2.shape[1]
+    
+    rhs = numpy.zeros((naux, nao2))
+    a0 = a1 = 0 # slice for auxilary basis
+    for cderi in df_obj.loop(blksize=20):
+        a1 = a0 + cderi.shape[0]
+        rhs[a0:a1] = cderi
+
+    coul, res, rank, s = scipy.linalg.lstsq(x2.T, rhs.T)
+    return coul.T
+
+def _fitting2(x, df_obj):
+    ng, nao = x.shape
+    naux = df_obj.get_naoaux()
+
+    from pyscf.lib import pack_tril, unpack_tril
+    x4 = lib.dot(x, x.T) ** 2
+    assert x4.shape == (ng, ng)
+    
+    rhs = numpy.zeros((naux, ng))
+    a0 = a1 = 0 # slice for auxilary basis
+    for cderi in df_obj.loop(blksize=20):
+        a1 = a0 + cderi.shape[0]
+        cderi = unpack_tril(cderi)
+        rhs[a0:a1] = numpy.einsum("Qmn,Im,In->QI", cderi, x, x, optimize=True)
+
+    coul, res, rank, s = scipy.linalg.lstsq(x4.T, rhs.T)
+    return coul.T
+
 class LeastSquareFitting(TensorHyperConractionMixin):
     def __init__(self, mol):
         self.cell = self.mol = mol
@@ -51,73 +89,18 @@ class LeastSquareFitting(TensorHyperConractionMixin):
 
         cput0 = (logger.process_clock(), logger.perf_counter())
 
-        ovlp_diag = numpy.diag(self.cell.pbc_intor("int1e_ovlp"))
-
         naux = with_df.get_naoaux()
         phi = self.cell.pbc_eval_gto("GTOval", grids.coords)
         phi *= (numpy.abs(grids.weights) ** 0.5)[:, None]
-        phi *= 1 / numpy.sqrt(ovlp_diag[None, :])
 
         chol, xx = cholesky(phi, tol=1e-8, log=log)
         nip, nao  = xx.shape
         cput1 = logger.timer(self, "interpolating vectors", *cput0)
 
-        rho_ref = numpy.einsum("gm,gn->gmn", phi, phi)
+        # vv = _fitting1(xx, df_obj=with_df)
+        vv = _fitting2(xx, df_obj=with_df)
 
-
-        zeta = lib.dot(phi, phi.T)
-        print(numpy.abs(zeta).min(), numpy.abs(zeta).max())
-
-        wsqrt = numpy.abs(grids.weights) ** 0.5
-        print(wsqrt.min(), wsqrt.max())
-        assert 1 == 2
- 
-        from pyscf.lib.scipy_helper import pivoted_cholesky
-        chol, perm, rank = pivoted_cholesky(zeta, lower=False, tol=1e-12)
-        mask = perm # [:400]
-
-        xx = phi[mask]
-        nip = xx.shape[0]
-        chol = chol[:nip, :nip]
-
-        df_chol_ref = numpy.zeros((naux, nao, nao))
-        a0 = a1 = 0 # slice for auxilary basis
-        from pyscf.lib import pack_tril, unpack_tril
-        for cderi in with_df.loop(blksize=20):
-            a1 = a0 + cderi.shape[0]
-            df_chol_ref[a0:a1] = unpack_tril(cderi)
-
- 
-        # u, s, vh = scipy.linalg.svd(x2)
-        # numpy.savetxt(self.cell.stdout, s, fmt="% 6.4e", header="Singular values", delimiter=",")
-        # assert 1 == 2
-
-        rhs = pack_tril(df_chol_ref)
-        # print("rhs = ", rhs.shape)
-        # print("x2 = ", x2.shape)
-        # a = scipy.linalg.lstsq(x2.T, rhs.T)[0]
-        # print("a = ", a.shape)
-        # err = numpy.linalg.norm(rhs.T - x2.T @ a)
-        # print("Error = % 6.4e" % err)
-
-        x2 = numpy.einsum("Im,In->Imn", xx, xx)
-        x2 = lib.pack_tril(x2)
-        x2inv = scipy.linalg.pinv(x2)
-    
-        a = (rhs @ x2inv)
-        err = numpy.linalg.norm(rhs - a @ x2)
-        print("Error = % 6.4e" % err)
-
-        # zz = zeta[mask][:, mask]
-        # zzinv, rank = scipy.linalg.pinv(zz, return_rank=True)
-        # theta = zzinv @ zeta[mask]
-
-        # rho_sol = numpy.einsum("Ig,Im,In->gmn", theta, xx, xx)
-
-        # err = numpy.linalg.norm(rho_ref - rho_sol)
-        # print("Error = % 6.4e" % err)
-
-        # coul = numpy.zeros((naux, nip))
+        # rhs = numpy.zeros((naux, nip))
         # blksize = int(self.max_memory * 1e6 * 0.5 / (8 * nao ** 2))
         # blksize = max(4, blksize)
 
@@ -133,7 +116,7 @@ class LeastSquareFitting(TensorHyperConractionMixin):
         #         x2  = xx[i0:i1, :, numpy.newaxis] * xx[i0:i1, numpy.newaxis, :]
         #         x2  = lib.pack_tril(x2 + x2.transpose(0, 2, 1))
         #         x2[:, ind * (ind + 1) // 2 + ind] *= 0.5
-        #         coul[a0:a1, i0:i1] += pyscf.lib.dot(cderi, x2.T)
+        #         rhs[a0:a1, i0:i1] += pyscf.lib.dot(cderi, x2.T)
         #         logger.timer(self, "coulomb kernel [%4d:%4d, %4d:%4d]" % (a0, a1, i0, i1), *cput)
         #         x2 = None
 
@@ -141,12 +124,12 @@ class LeastSquareFitting(TensorHyperConractionMixin):
 
         # cput1 = logger.timer(self, "coulomb kernel", *cput1)
 
-        # ww = scipy.linalg.solve_triangular(chol.T, coul.T, lower=True).T
+        # ww = scipy.linalg.solve_triangular(chol.T, rhs.T, lower=True).T
         # vv = scipy.linalg.solve_triangular(chol, ww.T, lower=False).T
         # cput1 = logger.timer(self, "solving linear equations", *cput1)
         # logger.timer(self, "LS-THC", *cput0)
 
-        self.vv = a
+        self.vv = vv
         self.xx = xx
         return self.vv, self.xx
 
