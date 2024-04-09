@@ -54,6 +54,11 @@ class LeastSquareFitting(TensorHyperConractionMixin):
             log.info('%s = %s', k, v)
         log.info('')
 
+    def eval_gto(self, coords, weights):
+        phi  = numint.eval_ao(self.mol, coords)
+        phi *= (numpy.abs(weights) ** 0.5)[:, None]
+        return phi
+
     def build(self):
         log = logger.Logger(self.stdout, self.verbose)
         self.with_df.verbose = self.verbose
@@ -75,21 +80,21 @@ class LeastSquareFitting(TensorHyperConractionMixin):
 
         cput0 = (logger.process_clock(), logger.perf_counter())
 
-        naux = with_df.get_naoaux()
-        phi  = numint.eval_ao(self.mol, grids.coords)
-        phi *= (numpy.abs(grids.weights) ** 0.5)[:, None]
-
+        
+        phi = self.eval_gto(grids.coords, grids.weights)
         zeta = lib.dot(phi, phi.T) ** 2
+
         chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta, tol=self.tol)
         log.info("Pivoted Cholesky rank: %d / %d", rank, phi.shape[0])
 
-        mask = perm # [:rank]
-        xx = phi[mask]
+        mask = perm[:rank]
+        xx = (phi * (numpy.diag(zeta) ** (-0.25))[:, None])[mask]
         nip, nao = xx.shape
         cput1 = logger.timer(self, "interpolating vectors", *cput0)
 
         # Build the coulomb kernel
         # rhs = numpy.einsum("Qmn,Im,In->QI", cderi, xip, xip)
+        naux = with_df.get_naoaux()
         rhs = numpy.zeros((naux, nip))
         blksize = int(self.max_memory * 1e6 * 0.5 / (8 * nao ** 2))
         blksize = max(4, blksize)
@@ -111,7 +116,6 @@ class LeastSquareFitting(TensorHyperConractionMixin):
             #     rhs[a0:a1, i0:i1] += numpy.einsum("Qmn,Im,In->QI", cderi, xx[i0:i1], xx[i0:i1], optimize=True)
             #     logger.timer(self, "RHS [%4d:%4d, %4d:%4d]" % (a0, a1, i0, i1), *cput)
                 # x2 = None
-
             a0 = a1
 
         cput1 = logger.timer(self, "RHS", *cput1)
@@ -121,10 +125,10 @@ class LeastSquareFitting(TensorHyperConractionMixin):
         coul = coul.T
 
         cput1 = logger.timer(self, "solving linear equations", *cput1)
-        log.info(
-            "Least squares: res = %6.4e, rank = %4d / %4d, cond = %6.4e",
-            numpy.linalg.norm(res) / nip, rank, nip, s[rank]
-            )
+        # log.info(
+        #     "Least squares: res = %6.4e, rank = %4d / %4d, cond = %6.4e",
+        #     numpy.linalg.norm(res) / nip, rank, nip, s[rank]
+        #     )
         logger.timer(self, "LS-THC", *cput0)
 
         self.coul = coul

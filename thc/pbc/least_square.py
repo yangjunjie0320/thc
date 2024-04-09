@@ -30,6 +30,7 @@ def _fitting1(x, df_obj):
         a0 = a1
 
     coul, res, rank, s = scipy.linalg.lstsq(x2.T, rhs.T)
+    print(numpy.linalg.norm(res), rank)
     return coul.T
 
 def _fitting2(x, df_obj):
@@ -69,8 +70,13 @@ class LeastSquareFitting(thc.mol.LeastSquareFitting):
             if not isinstance(v, (int, float, str)) or k == "verbose": continue
             log.info('%s = %s', k, v)
         log.info('')
+
+    def eval_gto(self, coords, weights):
+        phi = self.cell.pbc_eval_gto("GTOval", coords)
+        phi *= (numpy.abs(weights) ** 0.5)[:, None]
+        return phi
     
-    def build(self):
+    def build_(self):
         log = logger.Logger(self.stdout, self.verbose)
         self.with_df.verbose = self.verbose
         self.grids.verbose = self.verbose
@@ -100,7 +106,8 @@ class LeastSquareFitting(thc.mol.LeastSquareFitting):
         log.info("Pivoted Cholesky rank: %d / %d", rank, phi.shape[0])
 
         mask = perm[:rank]
-        xx = phi[mask]
+        xx = (phi * (numpy.diag(zeta) ** (-0.25))[:, None])[mask]
+
         nip, nao = xx.shape
         cput1 = logger.timer(self, "interpolating vectors", *cput0)
 
@@ -156,7 +163,7 @@ if __name__ == '__main__':
 
     thc.verbose = 6
     thc.tol = 1e-10
-    thc.grids.c_isdf = 10
+    thc.grids.c_isdf = 40
     thc.max_memory = 2000
     thc.build()
 
@@ -171,6 +178,7 @@ if __name__ == '__main__':
     for cderi in thc.with_df.loop(blksize=20):
         a1 = a0 + cderi.shape[0]
         df_chol_ref[a0:a1] = unpack_tril(cderi)
+        a0 = a1
 
     err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
     err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol) / c.natm
