@@ -9,24 +9,6 @@ from pyscf.lib import logger
 
 from thc.mol.gen_grids import InterpolatingPoints
 
-# def cholesky(x, tol=1e-8, log=None):
-#     ngrid, nao = x.shape
-    
-
-#     from scipy.linalg.lapack import dpstrf
-#     chol, perm, rank, info = dpstrf(x4, tol=tol)
-
-#     nisp = rank
-#     if log is not None:
-#         log.info("Cholesky: rank = %d / %d" % (rank, ngrid))
-
-#     perm = (numpy.array(perm) - 1)[:nisp]
-
-#     tril = numpy.tril_indices(nisp, k=-1)
-#     chol = chol[:nisp, :nisp]
-#     chol[tril] *= 0.0
-#     return chol, x[perm]
-
 class TensorHyperConractionMixin(lib.StreamObject):
     tol = 1e-4
     max_memory = 1000
@@ -80,7 +62,6 @@ class LeastSquareFitting(TensorHyperConractionMixin):
 
         cput0 = (logger.process_clock(), logger.perf_counter())
 
-        
         phi = self.eval_gto(grids.coords, grids.weights)
         zeta = lib.dot(phi, phi.T) ** 2
 
@@ -102,20 +83,17 @@ class LeastSquareFitting(TensorHyperConractionMixin):
         a0 = a1 = 0 # slice for auxilary basis
         for cderi in with_df.loop(blksize=blksize):
             a1 = a0 + cderi.shape[0]
-            cderi = lib.unpack_tril(cderi)
-            rhs[a0:a1] = numpy.einsum("Qmn,Im,In->QI", cderi, xx, xx, optimize=True)
+            for i0, i1 in lib.prange(0, nip, blksize): # slice for interpolating vectors
+                # TODO: sum over only the significant shell pairs
+                cput = (logger.process_clock(), logger.perf_counter())
 
-            # for i0, i1 in lib.prange(0, nip, blksize): # slice for interpolating vectors
-            #     # TODO: sum over only the significant shell pairs
-            #     cput = (logger.process_clock(), logger.perf_counter())
-
-            #     ind = numpy.arange(nao)
-            #     # x2  = xx[i0:i1, :, numpy.newaxis] * xx[i0:i1, numpy.newaxis, :]
-            #     # x2  = lib.pack_tril(x2 + x2.transpose(0, 2, 1))
-            #     # x2[:, ind * (ind + 1) // 2 + ind] *= 0.5
-            #     rhs[a0:a1, i0:i1] += numpy.einsum("Qmn,Im,In->QI", cderi, xx[i0:i1], xx[i0:i1], optimize=True)
-            #     logger.timer(self, "RHS [%4d:%4d, %4d:%4d]" % (a0, a1, i0, i1), *cput)
-                # x2 = None
+                ind = numpy.arange(nao)
+                x2  = xx[i0:i1, :, numpy.newaxis] * xx[i0:i1, numpy.newaxis, :]
+                x2  = lib.pack_tril(x2 + x2.transpose(0, 2, 1))
+                x2[:, ind * (ind + 1) // 2 + ind] *= 0.5
+                rhs[a0:a1, i0:i1] += numpy.dot(cderi, x2.T)
+                logger.timer(self, "RHS [%4d:%4d, %4d:%4d]" % (a0, a1, i0, i1), *cput)
+                x2 = None
             a0 = a1
 
         cput1 = logger.timer(self, "RHS", *cput1)
@@ -123,12 +101,12 @@ class LeastSquareFitting(TensorHyperConractionMixin):
         x4 = lib.dot(xx, xx.T) ** 2
         coul, res, rank, s = scipy.linalg.lstsq(x4.T, rhs.T)
         coul = coul.T
-
+        
         cput1 = logger.timer(self, "solving linear equations", *cput1)
-        # log.info(
-        #     "Least squares: res = %6.4e, rank = %4d / %4d, cond = %6.4e",
-        #     numpy.linalg.norm(res) / nip, rank, nip, s[rank]
-        #     )
+        log.info(
+            "Least squares: res = %6.4e, rank = %4d / %4d, cond = %6.4e",
+            numpy.linalg.norm(res) / nip, rank, nip, s[rank-1]
+            )
         logger.timer(self, "LS-THC", *cput0)
 
         self.coul = coul

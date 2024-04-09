@@ -75,67 +75,6 @@ class LeastSquareFitting(thc.mol.LeastSquareFitting):
         phi = self.cell.pbc_eval_gto("GTOval", coords)
         phi *= (numpy.abs(weights) ** 0.5)[:, None]
         return phi
-    
-    def build_(self):
-        log = logger.Logger(self.stdout, self.verbose)
-        self.with_df.verbose = self.verbose
-        self.grids.verbose = self.verbose
-
-        with_df = self.with_df
-        grids   = self.grids
-
-        if self.grids.coords is None:
-            log.info('\n******** %s ********', self.grids.__class__)
-            self.grids.dump_flags()
-            self.grids.build()
-
-        if self.with_df._cderi is None:
-            log.info('\n')
-            self.with_df.build()
-
-        self.dump_flags()
-
-        cput0 = (logger.process_clock(), logger.perf_counter())
-
-        naux = with_df.get_naoaux()
-        phi = self.cell.pbc_eval_gto("GTOval", grids.coords)
-        phi *= (numpy.abs(grids.weights) ** 0.5)[:, None]
-
-        zeta = lib.dot(phi, phi.T) ** 2
-        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta, tol=self.tol)
-        log.info("Pivoted Cholesky rank: %d / %d", rank, phi.shape[0])
-
-        mask = perm[:rank]
-        xx = (phi * (numpy.diag(zeta) ** (-0.25))[:, None])[mask]
-
-        nip, nao = xx.shape
-        cput1 = logger.timer(self, "interpolating vectors", *cput0)
-
-        x4 = lib.dot(xx, xx.T) ** 2
-        rhs = numpy.zeros((naux, nip))
-        blksize = int(self.max_memory * 1e6 * 0.5 / (8 * nao ** 2))
-        blksize = max(4, blksize)
-
-        a0 = a1 = 0 # slice for auxilary basis
-        for cderi in with_df.loop(blksize=blksize):
-            a1 = a0 + cderi.shape[0]
-            cderi = pyscf.lib.unpack_tril(cderi)
-            rhs[a0:a1] = numpy.einsum("Qmn,Im,In->QI", cderi, xx, xx, optimize=True)
-            a0 = a1
-
-        coul, res, rank, s = scipy.linalg.lstsq(x4.T, rhs.T)
-        coul = coul.T
-
-        cput1 = logger.timer(self, "solving linear equations", *cput1)
-        # log.info(
-        #     "Least squares: res = %6.4e, rank = %4d / %4d",
-        #     numpy.linalg.norm(res) / nip, rank, nip
-        #     )
-        logger.timer(self, "LS-THC", *cput0)
-
-        self.coul = coul
-        self.vipt = xx
-        return coul, xx
 
 LS = LeastSquareFitting
 
@@ -158,7 +97,6 @@ if __name__ == '__main__':
     thc = thc.LS(c)
     thc.with_df = pyscf.pbc.df.rsdf.RSGDF(c)
     thc.with_df.verbose = 6
-    # thc.with_df._cderi_to_save = "/Users/yangjunjie/Downloads/diamond-321g-rsgdf.h5"
     thc.with_df._cderi = "/Users/yangjunjie/Downloads/diamond-321g-rsgdf.h5"
 
     thc.verbose = 6
@@ -183,4 +121,3 @@ if __name__ == '__main__':
     err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
     err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol) / c.natm
     print("Method = %s, Error = % 6.4e % 6.4e" % ("cholesky", err1, err2))
-    
