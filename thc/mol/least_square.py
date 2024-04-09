@@ -9,23 +9,23 @@ from pyscf.lib import logger
 
 from thc.mol.gen_grids import InterpolatingPoints
 
-def cholesky(x, tol=1e-8, log=None):
-    ngrid, nao = x.shape
-    x4 = lib.dot(x, x.T) ** 2
+# def cholesky(x, tol=1e-8, log=None):
+#     ngrid, nao = x.shape
+    
 
-    from scipy.linalg.lapack import dpstrf
-    chol, perm, rank, info = dpstrf(x4, tol=tol)
+#     from scipy.linalg.lapack import dpstrf
+#     chol, perm, rank, info = dpstrf(x4, tol=tol)
 
-    nisp = rank
-    if log is not None:
-        log.info("Cholesky: rank = %d / %d" % (rank, ngrid))
+#     nisp = rank
+#     if log is not None:
+#         log.info("Cholesky: rank = %d / %d" % (rank, ngrid))
 
-    perm = (numpy.array(perm) - 1)[:nisp]
+#     perm = (numpy.array(perm) - 1)[:nisp]
 
-    tril = numpy.tril_indices(nisp, k=-1)
-    chol = chol[:nisp, :nisp]
-    chol[tril] *= 0.0
-    return chol, x[perm]
+#     tril = numpy.tril_indices(nisp, k=-1)
+#     chol = chol[:nisp, :nisp]
+#     chol[tril] *= 0.0
+#     return chol, x[perm]
 
 class TensorHyperConractionMixin(lib.StreamObject):
     tol = 1e-4
@@ -78,44 +78,58 @@ class LeastSquareFitting(TensorHyperConractionMixin):
         naux = with_df.get_naoaux()
         phi  = numint.eval_ao(self.mol, grids.coords)
         phi *= (numpy.abs(grids.weights) ** 0.5)[:, None]
-        chol, xx = cholesky(phi, tol=self.tol, log=log)
+
+        zeta = lib.dot(phi, phi.T) ** 2
+        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta, tol=self.tol)
+        log.info("Pivoted Cholesky rank: %d / %d", rank, phi.shape[0])
+
+        mask = perm # [:rank]
+        xx = phi[mask]
         nip, nao = xx.shape
         cput1 = logger.timer(self, "interpolating vectors", *cput0)
 
         # Build the coulomb kernel
-        # coul = numpy.einsum("Qmn,Im,In->QI", cderi, xip, xip)
-        coul = numpy.zeros((naux, nip))
+        # rhs = numpy.einsum("Qmn,Im,In->QI", cderi, xip, xip)
+        rhs = numpy.zeros((naux, nip))
         blksize = int(self.max_memory * 1e6 * 0.5 / (8 * nao ** 2))
         blksize = max(4, blksize)
 
         a0 = a1 = 0 # slice for auxilary basis
         for cderi in with_df.loop(blksize=blksize):
             a1 = a0 + cderi.shape[0]
+            cderi = lib.unpack_tril(cderi)
+            rhs[a0:a1] = numpy.einsum("Qmn,Im,In->QI", cderi, xx, xx, optimize=True)
 
-            for i0, i1 in lib.prange(0, nip, blksize): # slice for interpolating vectors
-                # TODO: sum over only the significant shell pairs
-                cput = (logger.process_clock(), logger.perf_counter())
+            # for i0, i1 in lib.prange(0, nip, blksize): # slice for interpolating vectors
+            #     # TODO: sum over only the significant shell pairs
+            #     cput = (logger.process_clock(), logger.perf_counter())
 
-                ind = numpy.arange(nao)
-                x2  = xx[i0:i1, :, numpy.newaxis] * xx[i0:i1, numpy.newaxis, :]
-                x2  = lib.pack_tril(x2 + x2.transpose(0, 2, 1))
-                x2[:, ind * (ind + 1) // 2 + ind] *= 0.5
-                coul[a0:a1, i0:i1] += pyscf.lib.dot(cderi, x2.T)
-                logger.timer(self, "coulomb kernel [%4d:%4d, %4d:%4d]" % (a0, a1, i0, i1), *cput)
-                x2 = None
+            #     ind = numpy.arange(nao)
+            #     # x2  = xx[i0:i1, :, numpy.newaxis] * xx[i0:i1, numpy.newaxis, :]
+            #     # x2  = lib.pack_tril(x2 + x2.transpose(0, 2, 1))
+            #     # x2[:, ind * (ind + 1) // 2 + ind] *= 0.5
+            #     rhs[a0:a1, i0:i1] += numpy.einsum("Qmn,Im,In->QI", cderi, xx[i0:i1], xx[i0:i1], optimize=True)
+            #     logger.timer(self, "RHS [%4d:%4d, %4d:%4d]" % (a0, a1, i0, i1), *cput)
+                # x2 = None
 
             a0 = a1
 
-        cput1 = logger.timer(self, "coulomb kernel", *cput1)
+        cput1 = logger.timer(self, "RHS", *cput1)
 
-        ww = scipy.linalg.solve_triangular(chol.T, coul.T, lower=True).T
-        vv = scipy.linalg.solve_triangular(chol, ww.T, lower=False).T
+        x4 = lib.dot(xx, xx.T) ** 2
+        coul, res, rank, s = scipy.linalg.lstsq(x4.T, rhs.T)
+        coul = coul.T
+
         cput1 = logger.timer(self, "solving linear equations", *cput1)
+        log.info(
+            "Least squares: res = %6.4e, rank = %4d / %4d, cond = %6.4e",
+            numpy.linalg.norm(res) / nip, rank, nip, s[rank]
+            )
         logger.timer(self, "LS-THC", *cput0)
 
-        self.vv = vv
-        self.xx = xx
-        return vv, xx
+        self.coul = coul
+        self.vipt = xx
+        return coul, xx
 
 LS = LeastSquareFitting
 
@@ -141,8 +155,8 @@ if __name__ == '__main__':
     thc.max_memory = 2000
     thc.build()
 
-    vv = thc.vv
-    xx = thc.xx
+    vv = thc.coul
+    xx = thc.vipt
 
     from pyscf.lib import unpack_tril
     df_chol_ref = unpack_tril(thc.with_df._cderi)

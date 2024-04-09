@@ -8,8 +8,8 @@ from pyscf import lib
 from pyscf.pbc.dft import numint
 from pyscf.lib import logger
 
+import thc
 from thc.pbc.gen_grids import InterpolatingPoints
-from thc.mol.least_square import cholesky, TensorHyperConractionMixin
 
 def _fitting1(x, df_obj):
     print("This method is N6, shall only be used for test.")
@@ -27,6 +27,7 @@ def _fitting1(x, df_obj):
     for cderi in df_obj.loop(blksize=20):
         a1 = a0 + cderi.shape[0]
         rhs[a0:a1] = cderi
+        a0 = a1
 
     coul, res, rank, s = scipy.linalg.lstsq(x2.T, rhs.T)
     return coul.T
@@ -45,11 +46,12 @@ def _fitting2(x, df_obj):
         a1 = a0 + cderi.shape[0]
         cderi = unpack_tril(cderi)
         rhs[a0:a1] = numpy.einsum("Qmn,Im,In->QI", cderi, x, x, optimize=True)
+        a0 = a1
 
     coul, res, rank, s = scipy.linalg.lstsq(x4.T, rhs.T)
     return coul.T
 
-class LeastSquareFitting(TensorHyperConractionMixin):
+class LeastSquareFitting(thc.mol.LeastSquareFitting):
     def __init__(self, mol):
         self.cell = self.mol = mol
         self.with_df = pbc.df.GDF(mol)
@@ -67,7 +69,7 @@ class LeastSquareFitting(TensorHyperConractionMixin):
             if not isinstance(v, (int, float, str)) or k == "verbose": continue
             log.info('%s = %s', k, v)
         log.info('')
-
+    
     def build(self):
         log = logger.Logger(self.stdout, self.verbose)
         self.with_df.verbose = self.verbose
@@ -93,45 +95,40 @@ class LeastSquareFitting(TensorHyperConractionMixin):
         phi = self.cell.pbc_eval_gto("GTOval", grids.coords)
         phi *= (numpy.abs(grids.weights) ** 0.5)[:, None]
 
-        chol, xx = cholesky(phi, tol=1e-8, log=log)
-        nip, nao  = xx.shape
+        zeta = lib.dot(phi, phi.T) ** 2
+        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta, tol=self.tol)
+        log.info("Pivoted Cholesky rank: %d / %d", rank, phi.shape[0])
+
+        mask = perm[:rank]
+        xx = phi[mask]
+        nip, nao = xx.shape
         cput1 = logger.timer(self, "interpolating vectors", *cput0)
 
-        # vv = _fitting1(xx, df_obj=with_df)
-        vv = _fitting2(xx, df_obj=with_df)
+        x4 = lib.dot(xx, xx.T) ** 2
+        rhs = numpy.zeros((naux, nip))
+        blksize = int(self.max_memory * 1e6 * 0.5 / (8 * nao ** 2))
+        blksize = max(4, blksize)
 
-        # rhs = numpy.zeros((naux, nip))
-        # blksize = int(self.max_memory * 1e6 * 0.5 / (8 * nao ** 2))
-        # blksize = max(4, blksize)
+        a0 = a1 = 0 # slice for auxilary basis
+        for cderi in with_df.loop(blksize=blksize):
+            a1 = a0 + cderi.shape[0]
+            cderi = pyscf.lib.unpack_tril(cderi)
+            rhs[a0:a1] = numpy.einsum("Qmn,Im,In->QI", cderi, xx, xx, optimize=True)
+            a0 = a1
 
-        # a0 = a1 = 0 # slice for auxilary basis
-        # for cderi in with_df.loop(blksize=blksize):
-        #     a1 = a0 + cderi.shape[0]
+        coul, res, rank, s = scipy.linalg.lstsq(x4.T, rhs.T)
+        coul = coul.T
 
-        #     for i0, i1 in lib.prange(0, nip, blksize): # slice for interpolating vectors
-        #         # TODO: sum over only the significant shell pairs
-        #         cput = (logger.process_clock(), logger.perf_counter())
+        cput1 = logger.timer(self, "solving linear equations", *cput1)
+        # log.info(
+        #     "Least squares: res = %6.4e, rank = %4d / %4d",
+        #     numpy.linalg.norm(res) / nip, rank, nip
+        #     )
+        logger.timer(self, "LS-THC", *cput0)
 
-        #         ind = numpy.arange(nao)
-        #         x2  = xx[i0:i1, :, numpy.newaxis] * xx[i0:i1, numpy.newaxis, :]
-        #         x2  = lib.pack_tril(x2 + x2.transpose(0, 2, 1))
-        #         x2[:, ind * (ind + 1) // 2 + ind] *= 0.5
-        #         rhs[a0:a1, i0:i1] += pyscf.lib.dot(cderi, x2.T)
-        #         logger.timer(self, "coulomb kernel [%4d:%4d, %4d:%4d]" % (a0, a1, i0, i1), *cput)
-        #         x2 = None
-
-        #     a0 = a1
-
-        # cput1 = logger.timer(self, "coulomb kernel", *cput1)
-
-        # ww = scipy.linalg.solve_triangular(chol.T, rhs.T, lower=True).T
-        # vv = scipy.linalg.solve_triangular(chol, ww.T, lower=False).T
-        # cput1 = logger.timer(self, "solving linear equations", *cput1)
-        # logger.timer(self, "LS-THC", *cput0)
-
-        self.vv = vv
-        self.xx = xx
-        return self.vv, self.xx
+        self.coul = coul
+        self.vipt = xx
+        return coul, xx
 
 LS = LeastSquareFitting
 
@@ -145,29 +142,26 @@ if __name__ == '__main__':
                 C     2.6751  0.8917  2.6751
                 C     0.      1.7834  1.7834
                 C     0.8917  2.6751  2.6751'''
-    c.basis = 'gth-szv'
-    c.pseudo = 'gth-pade'
+    c.basis = '321g'
     c.a = numpy.eye(3) * 3.5668
     c.unit = 'aa'
     c.build()
 
     import thc
     thc = thc.LS(c)
+    thc.with_df = pyscf.pbc.df.rsdf.RSGDF(c)
+    thc.with_df.verbose = 6
+    # thc.with_df._cderi_to_save = "/Users/yangjunjie/Downloads/diamond-321g-rsgdf.h5"
+    thc.with_df._cderi = "/Users/yangjunjie/Downloads/diamond-321g-rsgdf.h5"
+
     thc.verbose = 6
     thc.tol = 1e-10
     thc.grids.c_isdf = 10
     thc.max_memory = 2000
-
-    # thc.grids.coords = c.gen_uniform_grids([10, ] * 3)
-    # thc.grids.weights = (lambda ng: numpy.ones(ng) * c.vol/ng)(thc.grids.coords.shape[0])
-    thc.with_df._cderi = "/Users/yangjunjie/Downloads/gdf.h5"
     thc.build()
 
-    vv = thc.vv
-    xx = thc.xx
-
-    print("vv = ", vv.shape)
-    print("xx = ", xx.shape)
+    vv = thc.coul
+    xx = thc.vipt
 
     from pyscf.lib import pack_tril, unpack_tril
     df_chol_sol = numpy.einsum("QI,Im,In->Qmn", vv, xx, xx, optimize=True)
@@ -178,19 +172,7 @@ if __name__ == '__main__':
         a1 = a0 + cderi.shape[0]
         df_chol_ref[a0:a1] = unpack_tril(cderi)
 
-    df_chol_ref = pack_tril(df_chol_ref)
-    # u, s, vh = scipy.linalg.svd(df_chol_ref)
-    # numpy.savetxt(c.stdout, s, fmt="% 6.4e", header="Singular values", delimiter=",")
-
-    df_chol_sol = pack_tril(df_chol_sol)
-
-    # print("df_chol_ref = ", df_chol_ref.shape)
-    # numpy.savetxt(c.stdout, df_chol_ref[:20, :10], fmt="% 8.4e", header="Reference Cholesky factor", delimiter=",")
-
-    # print("df_chol_sol = ", df_chol_sol.shape)
-    # numpy.savetxt(c.stdout, df_chol_sol[:20, :10], fmt="% 8.4e", header="Solution Cholesky factor", delimiter=",")
-
-
     err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
     err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol) / c.natm
     print("Method = %s, Error = % 6.4e % 6.4e" % ("cholesky", err1, err2))
+    
