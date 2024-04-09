@@ -11,47 +11,6 @@ from pyscf.lib import logger
 import thc
 from thc.pbc.gen_grids import InterpolatingPoints
 
-def _fitting1(x, df_obj):
-    print("This method is N6, shall only be used for test.")
-
-    ng, nao = x.shape
-    naux = df_obj.get_naoaux()
-
-    from pyscf.lib import pack_tril, unpack_tril
-    x2 = numpy.einsum("gm,gn->gmn", x, x)
-    x2 = pack_tril(x2)
-    nao2 = x2.shape[1]
-    
-    rhs = numpy.zeros((naux, nao2))
-    a0 = a1 = 0 # slice for auxilary basis
-    for cderi in df_obj.loop(blksize=20):
-        a1 = a0 + cderi.shape[0]
-        rhs[a0:a1] = cderi
-        a0 = a1
-
-    coul, res, rank, s = scipy.linalg.lstsq(x2.T, rhs.T)
-    print(numpy.linalg.norm(res), rank)
-    return coul.T
-
-def _fitting2(x, df_obj):
-    ng, nao = x.shape
-    naux = df_obj.get_naoaux()
-
-    from pyscf.lib import pack_tril, unpack_tril
-    x4 = lib.dot(x, x.T) ** 2
-    assert x4.shape == (ng, ng)
-    
-    rhs = numpy.zeros((naux, ng))
-    a0 = a1 = 0 # slice for auxilary basis
-    for cderi in df_obj.loop(blksize=20):
-        a1 = a0 + cderi.shape[0]
-        cderi = unpack_tril(cderi)
-        rhs[a0:a1] = numpy.einsum("Qmn,Im,In->QI", cderi, x, x, optimize=True)
-        a0 = a1
-
-    coul, res, rank, s = scipy.linalg.lstsq(x4.T, rhs.T)
-    return coul.T
-
 class LeastSquareFitting(thc.mol.LeastSquareFitting):
     def __init__(self, mol):
         self.cell = self.mol = mol
@@ -97,7 +56,7 @@ if __name__ == '__main__':
     thc = thc.LS(c)
     thc.with_df = pyscf.pbc.df.rsdf.RSGDF(c)
     thc.with_df.verbose = 6
-    thc.with_df._cderi = "/Users/yangjunjie/Downloads/diamond-321g-rsgdf.h5"
+    # thc.with_df._cderi = "/Users/yangjunjie/Downloads/diamond-321g-rsgdf.h5"
 
     thc.verbose = 6
     thc.tol = 1e-10
