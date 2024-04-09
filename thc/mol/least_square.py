@@ -10,21 +10,20 @@ from pyscf.lib import logger
 from thc.mol.gen_grids import InterpolatingPoints
 
 class TensorHyperConractionMixin(lib.StreamObject):
-    tol = 1e-4
     max_memory = 1000
     verbose = 5
 
-    vv = None
-    xip = None
+    coul = None
+    vipt = None
 
 class LeastSquareFitting(TensorHyperConractionMixin):
+    tol = 1e-14
+
     def __init__(self, mol):
         self.mol = mol
         self.with_df = df.DF(mol)
         self.grids = InterpolatingPoints(mol)
         self.grids.level = 0
-
-        self.tol = 1e-8
         self.max_memory = mol.max_memory
 
     def dump_flags(self):
@@ -64,19 +63,25 @@ class LeastSquareFitting(TensorHyperConractionMixin):
 
         phi = self.eval_gto(grids.coords, grids.weights)
         zeta = lib.dot(phi, phi.T) ** 2
+        ng, nao = phi.shape
 
-        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta, tol=self.tol)
-        log.info("Pivoted Cholesky rank: %d / %d", rank, phi.shape[0])
+        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta, tol=self.tol, lower=False)
+        nip = rank
+        
+        perm = perm[:rank]
+        chol = chol[:rank, :rank]
+        err  = chol[rank-1, rank-1] / chol[0, 0]
+        log.info("Pivoted Cholesky rank: %d / %d, err = %6.4e", rank, ng, err)
 
-        mask = perm[:rank]
-        xx = (phi * (numpy.diag(zeta) ** (-0.25))[:, None])[mask]
-        nip, nao = xx.shape
+        xx = phi[perm]
         cput1 = logger.timer(self, "interpolating vectors", *cput0)
 
         # Build the coulomb kernel
         # rhs = numpy.einsum("Qmn,Im,In->QI", cderi, xip, xip)
         naux = with_df.get_naoaux()
         rhs = numpy.zeros((naux, nip))
+
+        # TODO: Is this correct?
         blksize = int(self.max_memory * 1e6 * 0.5 / (8 * nao ** 2))
         blksize = max(4, blksize)
 
@@ -98,15 +103,10 @@ class LeastSquareFitting(TensorHyperConractionMixin):
 
         cput1 = logger.timer(self, "RHS", *cput1)
 
-        x4 = lib.dot(xx, xx.T) ** 2
-        coul, res, rank, s = scipy.linalg.lstsq(x4.T, rhs.T)
-        coul = coul.T
+        ww = scipy.linalg.solve_triangular(chol.T, rhs.T, lower=True).T
+        coul = scipy.linalg.solve_triangular(chol, ww.T, lower=False).T
         
         cput1 = logger.timer(self, "solving linear equations", *cput1)
-        log.info(
-            "Least squares: res = %6.4e, rank = %4d / %4d, cond = %6.4e",
-            numpy.linalg.norm(res) / nip, rank, nip, s[rank-1]
-            )
         logger.timer(self, "LS-THC", *cput0)
 
         self.coul = coul
@@ -124,16 +124,14 @@ if __name__ == '__main__':
         O   -5.0373186   -5.2694388   -1.2581917
         H   -4.2054186   -5.5931034   -0.8297803
         H   -4.7347234   -4.8522045   -2.1034720
-        """, basis="ccpvdz", verbose=0
+        """, basis="ccpvqz", verbose=0
     )
 
     import thc
     thc = thc.LS(m)
     thc.verbose = 6
-    thc.tol = 1e-16
-    thc.grids.level  = 0
+    thc.grids.level  = 2
     thc.grids.c_isdf = 20
-    thc.with_df.auxbasis = "weigend"
     thc.max_memory = 2000
     thc.build()
 
@@ -145,5 +143,5 @@ if __name__ == '__main__':
     df_chol_sol = numpy.einsum("QI,Im,In->Qmn", vv, xx, xx, optimize=True)
 
     err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
-    err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol) / m.natm
+    err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol)
     print("Method = %s, Error = % 6.4e % 6.4e" % ("cholesky", err1, err2))

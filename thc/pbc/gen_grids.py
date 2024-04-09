@@ -177,14 +177,15 @@ class InterpolatingPoints(thc.mol.gen_grids.InterpolatingPoints):
             from pyscf.lib import pivoted_cholesky
             phi4 = pyscf.lib.dot(phi, phi.T) ** 2
             chol, perm, rank = pivoted_cholesky(phi4, tol=self.tol, lower=False)
-            mask = perm[:nip]
+            err = chol[nip-1, nip-1] / chol[0, 0]
 
+            mask = perm[:nip]
             coords.append(c[mask])
             weights.append(w[mask])
 
             log.info(
-                "Atom %d %s: nao = % 4d, %6d -> %4d" % (
-                    ia, sym, nao, w.size, nip
+                "Atom %4d %3s: nao = % 4d, %6d -> %4d, err = % 6.4e" % (
+                    ia, sym, nao, w.size, nip, err
                 )
             )
 
@@ -223,6 +224,5 @@ if __name__ == "__main__":
     grid = InterpolatingPoints(c)
     grid.level = 0
     grid.verbose = 6
-    grid.c_isdf  = 20
-    grid.tol     = 1e-8
+    grid.c_isdf  = 40
     grid.kernel()

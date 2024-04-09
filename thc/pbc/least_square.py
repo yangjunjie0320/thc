@@ -17,8 +17,6 @@ class LeastSquareFitting(thc.mol.LeastSquareFitting):
         self.with_df = pbc.df.GDF(mol)
         self.grids = InterpolatingPoints(mol)
         self.grids.level = 0
-
-        self.tol = 1e-16
         self.max_memory = mol.max_memory
 
     def dump_flags(self):
@@ -56,11 +54,8 @@ if __name__ == '__main__':
     thc = thc.LS(c)
     thc.with_df = pyscf.pbc.df.rsdf.RSGDF(c)
     thc.with_df.verbose = 6
-    # thc.with_df._cderi = "/Users/yangjunjie/Downloads/diamond-321g-rsgdf.h5"
-
     thc.verbose = 6
-    thc.tol = 1e-10
-    thc.grids.c_isdf = 40
+    thc.grids.c_isdf = 20
     thc.max_memory = 2000
     thc.build()
 
@@ -78,5 +73,5 @@ if __name__ == '__main__':
         a0 = a1
 
     err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
-    err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol) / c.natm
+    err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol) / df_chol_ref.size
     print("Method = %s, Error = % 6.4e % 6.4e" % ("cholesky", err1, err2))
