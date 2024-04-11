@@ -16,9 +16,9 @@ class TensorHyperConractionMixin(lib.StreamObject):
     coul = None
     vipt = None
 
-class LeastSquareFitting(TensorHyperConractionMixin):
     tol = 1e-14
 
+class LeastSquareFitting(TensorHyperConractionMixin):
     def __init__(self, mol):
         self.mol = mol
         self.with_df = df.DF(mol)
@@ -68,9 +68,9 @@ class LeastSquareFitting(TensorHyperConractionMixin):
         chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta, tol=self.tol, lower=False)
         nip = rank
         
-        perm = perm[:rank]
-        chol = chol[:rank, :rank]
-        err  = chol[rank-1, rank-1] / chol[0, 0]
+        perm = perm[:nip]
+        chol = chol[:nip, :nip]
+        err  = abs(chol[nip - 1, nip - 1] / chol[0, 0])
         log.info("Pivoted Cholesky rank: %d / %d, err = %6.4e", rank, ng, err)
 
         xx = phi[perm]

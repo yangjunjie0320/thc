@@ -3,7 +3,9 @@ from pyscf import gto as gto_mol
 from pyscf.pbc import gto as gto_pbc
 
 import thc
-import thc.mol.least_square, thc.pbc.least_square
+import thc.mol.least_square
+import thc.pbc.least_square
+import thc.pbc.isdf
 
 # Some wrappers for the molecular and periodic systems
 def LeastSquareFitting(m: pyscf.gto.MoleBase, *args, **kwargs):
@@ -31,8 +33,7 @@ def InterpolativeSeparableDensityFitting(m: pyscf.gto.MoleBase, *args, **kwargs)
     assert isinstance(m, pyscf.gto.MoleBase)
     
     if isinstance(m, gto_pbc.Cell):
-        pass
-        # return thc.pbc.isdf.InterpolativeSeparableDensityFitting(m, *args, **kwargs)
+        return thc.pbc.isdf.InterpolativeSeparableDensityFitting(m, *args, **kwargs)
     
     else:
         raise RuntimeError(f"Unsupported type for ISDF: {type(m)}")
