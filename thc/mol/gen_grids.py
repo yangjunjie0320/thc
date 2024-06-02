@@ -34,33 +34,40 @@ class InterpolatingPoints(pyscf.dft.gen_grid.Grids):
     c_isdf = 10
     alignment = 0
 
-    def build(self, mol=None, with_non0tab=False, sort_grids=True, **kwargs):
+    def build(self, **kwargs):
         '''
         Build ISDF grids.
         '''
-        if mol is None: mol = self.mol
         log = logger.new_logger(self, self.verbose)
         log.info('\nSet up interpolating points with Pivoted Cholesky decomposition.')
         if self.c_isdf is not None:
             log.info('c_isdf = %d', self.c_isdf)
 
-        atom_grids_tab = self.gen_atomic_grids(
-            mol, self.atom_grid, self.radi_method,
-            self.level, self.prune, **kwargs
-        )
+        self.__super__.build(**kwargs)
 
-        coords, weights = self.get_partition(
-            mol, atom_grids_tab, self.radii_adjust,
-            self.atomic_radii, self.becke_scheme,
-            concat=True
-        )
+        coords = self.coords
+        weights = self.weights
 
-        print("grid", coords.shape, weights.shape)
+        print("coords", coords.shape)
+        print("weights", weights.shape)
 
-        atom_xyz = mol.atom_coords()
+        # atom_grids_tab = self.gen_atomic_grids(
+        #     mol, self.atom_grid, self.radi_method,
+        #     self.level, self.prune, **kwargs
+        # )
 
-        ind = divide(atom_xyz, coords)
-        print("ind", ind)
+        # coords, weights = self.get_partition(
+        #     mol, atom_grids_tab, self.radii_adjust,
+        #     self.atomic_radii, self.becke_scheme,
+        #     concat=True
+        # )
+
+        # print("grid", coords.shape, weights.shape)
+
+        # atom_xyz = mol.atom_coords()
+
+        # ind = divide(atom_xyz, coords)
+        # print("ind", ind)
 
         # grid = zip(
         #     mol.aoslice_by_atom(),
