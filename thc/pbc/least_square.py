@@ -1,4 +1,3 @@
-import pyscf.pbc
 import numpy, scipy
 import scipy.linalg
 
@@ -12,12 +11,12 @@ import thc
 from thc.pbc.gen_grids import InterpolatingPoints
 
 class LeastSquareFitting(thc.mol.LeastSquareFitting):
-    def __init__(self, mol):
-        self.cell = self.mol = mol
-        self.with_df = pbc.df.GDF(mol)
-        self.grids = InterpolatingPoints(mol)
+    def __init__(self, cell):
+        self.cell = self.mol = cell
+        self.with_df = pbc.df.GDF(cell)
+        self.grids = InterpolatingPoints(cell)
         self.grids.level = 0
-        self.max_memory = mol.max_memory
+        self.max_memory = cell.max_memory
 
     def dump_flags(self):
         log = logger.Logger(self.stdout, self.verbose)
@@ -35,15 +34,18 @@ class LeastSquareFitting(thc.mol.LeastSquareFitting):
 
 LS = LeastSquareFitting
 
+from thc.pbc.k_least_square import WithKPoint
+LeastSquareFittingWithKPoint = WithKPoint
+
 if __name__ == '__main__':
     c = pyscf.pbc.gto.Cell()
-    c.atom = '''C     0.      0.      0.    
+    c.atom = '''C     0.0000  0.0000  0.0000
                 C     0.8917  0.8917  0.8917
-                C     1.7834  1.7834  0.    
+                C     1.7834  1.7834  0.0000
                 C     2.6751  2.6751  0.8917
-                C     1.7834  0.      1.7834
+                C     1.7834  0.0000  1.7834
                 C     2.6751  0.8917  2.6751
-                C     0.      1.7834  1.7834
+                C     0.0000  1.7834  1.7834
                 C     0.8917  2.6751  2.6751'''
     c.basis = '321g'
     c.a = numpy.eye(3) * 3.5668
