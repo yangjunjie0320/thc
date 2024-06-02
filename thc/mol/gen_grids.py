@@ -8,7 +8,7 @@ import pyscf.dft.gen_grid
 
 from pyscf.dft import gen_grid
 
-def divide(xx: numpy.ndarray, yy: numpy.ndarray) -> list:
+def divide(xx: numpy.ndarray, yy: numpy.ndarray, batch_size: int = 2000) -> numpy.ndarray:
     """
     Calculate the Euclidean distances between each point in xx and each point in yy,
     and divide the points in yy into nx groups based on their distances to the points in xx.
@@ -23,110 +23,84 @@ def divide(xx: numpy.ndarray, yy: numpy.ndarray) -> list:
     nx, ny = xx.shape[0], yy.shape[0]
     assert xx.shape == (nx, 3)
     assert yy.shape == (ny, 3)
+    assert nx < ny
 
     d = numpy.linalg.norm(xx[:, numpy.newaxis, :] - yy[numpy.newaxis, :, :], axis=2)
     assert d.shape == (nx, ny)
 
-    return numpy.argmin(d, axis=0)
+    ind = numpy.argmin(d, axis=0)
+    return [numpy.where(ind == ix)[0] for ix in range(nx)]
+
+def select(mol=None, ia=0, coord=None, weigh=None, c_isdf=10, tol=1e-10):
+    sym = mol.atom_symbol(ia)
+    nao = (lambda s: s[3] - s[2])(mol.aoslice_by_atom()[ia])
+    
+    ng = coord.shape[0]
+    assert coord.shape == (ng, 3)
+    assert weigh.shape == (ng,)
+
+    nip = int(c_isdf * nao)
+    nip = min(nip, ng)
+
+    phi  = numint.eval_ao(mol, coord, deriv=0, shls_slice=None)
+    phi *= (numpy.abs(weigh) ** 0.5)[:, None]
+    phi4 = numpy.dot(phi, phi.T) ** 2
+
+    from pyscf.lib import pivoted_cholesky
+    chol, perm, rank = pivoted_cholesky(phi4, tol=tol, lower=False)
+    nip = min(nip, rank)
+    err = chol[nip-1, nip-1] # / chol[0, 0]
+
+    mask = perm[:nip]
+    info = "Atom %4d %3s: nao = % 4d, %6d -> %4d, err = % 6.4e" % (
+        ia, sym, nao, weigh.size, nip, err
+    )
+
+    return coord[mask], weigh[mask], (ia, info)
 
 class InterpolatingPoints(pyscf.dft.gen_grid.Grids):
-    tol = 1e-14
-    c_isdf = 10
-    alignment = 0
+    _keys = pyscf.dft.gen_grid.Grids._keys | set([
+        'c_isdf', 'tol', 'batch_size'
+    ])
 
-    def build(self, **kwargs):
+    def __init__(self, *args, **kwargs):
+        self.c_isdf = 10
+        self.tol = 1e-20
+        super().__init__(*args, **kwargs)
+
+    def build(self, *args, **kwargs):
         '''
         Build ISDF grids.
         '''
+        super().build(*args, **kwargs)
+
         log = logger.new_logger(self, self.verbose)
-        log.info('\nSet up interpolating points with Pivoted Cholesky decomposition.')
         if self.c_isdf is not None:
+            log.info('\nSelecting interpolating points with Pivoted Cholesky decomposition.')
             log.info('c_isdf = %d', self.c_isdf)
+        else:
+            log.info('No c_isdf is specified. Using all grids.')
+            return self
+        
+        mol = self.mol
 
-        self.__super__.build(**kwargs)
+        coords = []
+        weights = []
 
-        coords = self.coords
-        weights = self.weights
+        cput0 = (logger.process_clock(), logger.perf_counter())
+        for ia, m in enumerate(divide(mol.atom_coords(), self.coords)):
+            tmp = select(
+                mol, ia, self.coords[m], self.weights[m],
+                self.c_isdf, self.tol
+                )
+            coords.append(tmp[0])
+            weights.append(tmp[1])
+            log.info(tmp[2][1])
 
-        print("coords", coords.shape)
-        print("weights", weights.shape)
-
-        # atom_grids_tab = self.gen_atomic_grids(
-        #     mol, self.atom_grid, self.radi_method,
-        #     self.level, self.prune, **kwargs
-        # )
-
-        # coords, weights = self.get_partition(
-        #     mol, atom_grids_tab, self.radii_adjust,
-        #     self.atomic_radii, self.becke_scheme,
-        #     concat=True
-        # )
-
-        # print("grid", coords.shape, weights.shape)
-
-        # atom_xyz = mol.atom_coords()
-
-        # ind = divide(atom_xyz, coords)
-        # print("ind", ind)
-
-        # grid = zip(
-        #     mol.aoslice_by_atom(),
-        #     *
-        # )
-
-        # cput0 = (logger.process_clock(), logger.perf_counter())
-
-        # coords = []
-        # weights = []
-
-        # for ia, (s, c, w) in enumerate(grid):
-        #     sym = mol.atom_symbol(ia)
-        #     nao = s[3] - s[2]
-
-        #     phi  = numint.eval_ao(mol, c, deriv=0, shls_slice=None)
-        #     phi *= (numpy.abs(w) ** 0.5)[:, None]
-        #     ng   = phi.shape[0]
-
-        #     nip = int(self.c_isdf) * nao if self.c_isdf else ng
-        #     nip = min(nip, ng)
-            
-        #     from pyscf.lib import pivoted_cholesky
-        #     phi4 = pyscf.lib.dot(phi, phi.T) ** 2
-        #     chol, perm, rank = pivoted_cholesky(phi4, tol=self.tol, lower=False)
-        #     err = chol[nip-1, nip-1] / chol[0, 0]
-
-        #     mask = perm[:nip]
-        #     coords.append(c[mask])
-        #     weights.append(w[mask])
-
-        #     log.info(
-        #         "Atom %4d %3s: nao = % 4d, %6d -> %4d, err = % 6.4e" % (
-        #             ia, sym, nao, w.size, nip, err
-        #         )
-        #     )
-
-        # log.timer("Building Interpolating Points", *cput0)
-
-        # self.coords  = numpy.vstack(coords)
-        # self.weights = numpy.hstack(weights)
-
-        # if sort_grids:
-        #     from pyscf.dft.gen_grid import arg_group_grids
-        #     ind = arg_group_grids(mol, self.coords)
-        #     self.coords = self.coords[ind]
-        #     self.weights = self.weights[ind]
-
-        # if self.alignment > 1:
-        #     raise KeyError("Alignment is not supported for ISDF grids.")
-
-        # if with_non0tab:
-        #     self.non0tab = self.make_mask(mol, self.coords)
-        #     self.screen_index = self.non0tab
-        # else:
-        #     self.screen_index = self.non0tab = None
-
-        # log.info('Total number of interpolating points = %d', len(self.weights))
-        # return self
+        log.timer("Building Interpolating Points", *cput0)
+        self.coords  = numpy.vstack(coords)
+        self.weights = numpy.hstack(weights)
+        return self
 
 Grids = InterpolatingPoints
 
@@ -143,7 +117,7 @@ if __name__ == "__main__":
     )
 
     grid = InterpolatingPoints(m)
-    grid.level = 0
+    grid.level   = 0
     grid.verbose = 6
-    grid.c_isdf  = 10
+    grid.c_isdf  = 30
     grid.kernel()
