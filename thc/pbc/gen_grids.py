@@ -134,8 +134,8 @@ if __name__ == "__main__":
     c.verbose = 4
     c.build()
 
-    grid = BeckeGridsForSolid(c)
-    grid.mesh = [15, 15, 15]
+    grid = UniformGridsForSolid(c)
+    grid.mesh = [4, 4, 4]
     grid.level = 0
     grid.verbose = 6
     grid.c_isdf  = 40

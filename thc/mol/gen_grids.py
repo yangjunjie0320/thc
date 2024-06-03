@@ -7,28 +7,20 @@ from pyscf.lib import logger
 from pyscf.dft import numint
 import pyscf.dft.gen_grid
 
-def divide(xx: numpy.ndarray, yy: numpy.ndarray, batch_size: int = 2000) -> numpy.ndarray:
-    """
-    Calculate the Euclidean distances between each point in xx and each point in yy,
-    and divide the points in yy into nx groups based on their distances to the points in xx.
-    
-    Parameters:
-    xx (numpy.ndarray): An array of shape (nx, 3) representing nx points in 3D space.
-    yy (numpy.ndarray): An array of shape (ny, 3) representing ny points in 3D space.
-    
-    Returns:
-    list: A list of nx arrays, each containing the points in yy that are closest to the corresponding point in xx.
-    """
-    nx, ny = xx.shape[0], yy.shape[0]
-    assert xx.shape == (nx, 3)
-    assert yy.shape == (ny, 3)
-    assert nx < ny
+def divide(xa: numpy.ndarray, xg: numpy.ndarray) -> numpy.ndarray:
+    na = xa.shape[0]
+    ng = xg.shape[0]
 
-    d = numpy.linalg.norm(xx[:, numpy.newaxis, :] - yy[numpy.newaxis, :, :], axis=2)
-    assert d.shape == (nx, ny)
+    assert xa.shape == (na, 3)
+    assert xg.shape == (ng, 3)
+    assert na < ng
 
-    ind = numpy.argmin(d, axis=0)
-    return [numpy.where(ind == ix)[0] for ix in range(nx)]
+    d = numpy.linalg.norm(xa[:, None, :] - xg[None, :, :], axis=2)
+    assert d.shape == (na, ng)
+
+    ind = numpy.argmin(d, axis=1)
+    return [numpy.where(ind == ia)[0] for ia in range(na)]
+    
 
 class InterpolatingPointsMixin(lib.StreamObject):
     c_isdf = 10
@@ -38,6 +30,9 @@ class InterpolatingPointsMixin(lib.StreamObject):
         raise NotImplementedError
 
     def _eval_gto(self, coord, weigh):
+        raise NotImplementedError
+    
+    def _divide(self, coord):
         raise NotImplementedError
 
     def _select(self, ia, coord=None, weigh=None):
@@ -89,14 +84,12 @@ class InterpolatingPointsMixin(lib.StreamObject):
         else:
             log.info('No c_isdf is specified. Using all grids.')
             return self
-        
-        mol = self.mol
 
         coords = []
         weights = []
 
         cput0 = (logger.process_clock(), logger.perf_counter())
-        for ia, m in enumerate(divide(mol.atom_coords(), self.coords)):
+        for ia, m in enumerate(self._divide(self.coords)):
             tmp = self._select(ia, self.coords[m], self.weights[m])
             coords.append(tmp[0])
             weights.append(tmp[1])
@@ -110,6 +103,9 @@ class InterpolatingPointsMixin(lib.StreamObject):
 
 class BeckeGridsForMolecule(InterpolatingPointsMixin, pyscf.dft.gen_grid.Grids):
     _keys = pyscf.dft.gen_grid.Grids._keys | set(["c_isdf", "tol"])
+
+    def _divide(self, coord):
+        return super()._divide(coord)
 
     def _eval_gto(self, coord, weigh):
         phi = numint.eval_ao(self.mol, coord, deriv=0, shls_slice=None)
