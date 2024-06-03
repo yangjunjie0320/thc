@@ -62,7 +62,7 @@ if __name__ == '__main__':
     thc.build()
 
     vv = thc.coul
-    xx = thc.vipt
+    xx = thc.xipt
 
     from pyscf.lib import pack_tril, unpack_tril
     df_chol_sol = numpy.einsum("QI,Im,In->Qmn", vv, xx, xx, optimize=True)

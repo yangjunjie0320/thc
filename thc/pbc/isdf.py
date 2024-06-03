@@ -87,7 +87,7 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
         coul = numpy.einsum('ug,g,vg->uv', y.conj(), g2inv, y, optimize=True)
 
         self.coul = coul
-        self.vipt = xx
+        self.xipt = xx
         return coul, xx
 
 
@@ -117,7 +117,7 @@ if __name__ == '__main__':
     thc.build()
 
     vv = thc.coul
-    xx = thc.vipt
+    xx = thc.xipt
 
     import pyscf.pbc.df
 

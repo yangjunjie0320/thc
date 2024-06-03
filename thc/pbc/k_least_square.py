@@ -9,7 +9,7 @@ from pyscf.lib import logger
 
 import thc
 from thc.pbc.least_square import LeastSquareFitting
-from thc.pbc.gen_grids import InterpolatingPoints
+from thc.pbc.gen_grids import Grids
 
 class WithKPoint(LeastSquareFitting):
     def __init__(self, cell, kpts=None):

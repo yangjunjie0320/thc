@@ -20,7 +20,7 @@ thc.max_memory = 2000
 thc.build()
 
 vv = thc.coul
-xx = thc.vipt
+xx = thc.xipt
 
 from pyscf.lib import unpack_tril
 df_chol_ref = unpack_tril(thc.with_df._cderi)

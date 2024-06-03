@@ -5,8 +5,8 @@ from pyscf.pbc import gto as gto_pbc
 import thc
 import thc.mol.least_square
 
-import thc.pbc.isdf
-import thc.pbc.least_square
+# import thc.pbc.isdf
+# import thc.pbc.least_square
 
 # Some wrappers for the molecular and periodic systems
 def LeastSquareFitting(m: pyscf.gto.MoleBase, kpts=None):

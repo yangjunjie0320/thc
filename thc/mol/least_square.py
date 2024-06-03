@@ -7,22 +7,22 @@ from pyscf import lib
 from pyscf.dft import numint
 from pyscf.lib import logger
 
-from thc.mol.gen_grids import InterpolatingPoints
+from thc.mol.gen_grids import Grids
 
 class TensorHyperConractionMixin(lib.StreamObject):
     max_memory = 1000
     verbose = 5
 
     coul = None
-    vipt = None
+    xipt = None
 
-    tol = 1e-14
+    tol = 1e-16
 
 class LeastSquareFitting(TensorHyperConractionMixin):
     def __init__(self, mol):
         self.mol = mol
         self.with_df = df.DF(mol)
-        self.grids = InterpolatingPoints(mol)
+        self.grids = Grids(mol)
         self.grids.level = 0
         self.max_memory = mol.max_memory
 
@@ -70,10 +70,10 @@ class LeastSquareFitting(TensorHyperConractionMixin):
         
         perm = perm[:nip]
         chol = chol[:nip, :nip]
-        err  = abs(chol[nip - 1, nip - 1] / chol[0, 0])
+        err  = abs(chol[nip - 1, nip - 1])
         log.info("Pivoted Cholesky rank: %d / %d, err = %6.4e", rank, ng, err)
 
-        xx = phi[perm]
+        xipt = phi[perm]
         cput1 = logger.timer(self, "interpolating vectors", *cput0)
 
         # Build the coulomb kernel
@@ -93,10 +93,10 @@ class LeastSquareFitting(TensorHyperConractionMixin):
                 cput = (logger.process_clock(), logger.perf_counter())
 
                 ind = numpy.arange(nao)
-                x2  = xx[i0:i1, :, numpy.newaxis] * xx[i0:i1, numpy.newaxis, :]
+                x2  = xipt[i0:i1, :, numpy.newaxis] * xipt[i0:i1, numpy.newaxis, :]
                 x2  = lib.pack_tril(x2 + x2.transpose(0, 2, 1))
                 x2[:, ind * (ind + 1) // 2 + ind] *= 0.5
-                rhs[a0:a1, i0:i1] += numpy.dot(cderi, x2.T)
+                rhs[a0:a1, i0:i1] += lib.dot(cderi, x2.T)
                 logger.timer(self, "RHS [%4d:%4d, %4d:%4d]" % (a0, a1, i0, i1), *cput)
                 x2 = None
             a0 = a1
@@ -110,8 +110,8 @@ class LeastSquareFitting(TensorHyperConractionMixin):
         logger.timer(self, "LS-THC", *cput0)
 
         self.coul = coul
-        self.vipt = xx
-        return coul, xx
+        self.xipt = xipt
+        return coul, xipt
 
 LS = LeastSquareFitting
 
@@ -129,14 +129,14 @@ if __name__ == '__main__':
 
     import thc
     thc = thc.LS(m)
-    thc.verbose = 6
-    thc.grids.level  = 2
-    thc.grids.c_isdf = 20
-    thc.max_memory = 2000
+    thc.verbose      = 6
+    thc.grids.level  = 0
+    thc.grids.c_isdf = 25
+    thc.max_memory   = 500
     thc.build()
 
     vv = thc.coul
-    xx = thc.vipt
+    xx = thc.xipt
 
     from pyscf.lib import unpack_tril
     df_chol_ref = unpack_tril(thc.with_df._cderi)

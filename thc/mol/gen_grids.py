@@ -2,11 +2,10 @@ import pyscf, numpy, scipy
 import scipy.linalg
 
 import pyscf
+from pyscf import lib
 from pyscf.lib import logger
 from pyscf.dft import numint
 import pyscf.dft.gen_grid
-
-from pyscf.dft import gen_grid
 
 def divide(xx: numpy.ndarray, yy: numpy.ndarray, batch_size: int = 2000) -> numpy.ndarray:
     """
@@ -31,42 +30,51 @@ def divide(xx: numpy.ndarray, yy: numpy.ndarray, batch_size: int = 2000) -> nump
     ind = numpy.argmin(d, axis=0)
     return [numpy.where(ind == ix)[0] for ix in range(nx)]
 
-def select(mol=None, ia=0, coord=None, weigh=None, c_isdf=10, tol=1e-10):
-    sym = mol.atom_symbol(ia)
-    nao = (lambda s: s[3] - s[2])(mol.aoslice_by_atom()[ia])
-    
-    ng = coord.shape[0]
-    assert coord.shape == (ng, 3)
-    assert weigh.shape == (ng,)
+class InterpolatingPointsMixin(lib.StreamObject):
+    c_isdf = 10
+    tol = 1e-20
 
-    nip = int(c_isdf * nao)
-    nip = min(nip, ng)
+    def __init__(self):
+        raise NotImplementedError
 
-    phi  = numint.eval_ao(mol, coord, deriv=0, shls_slice=None)
-    phi *= (numpy.abs(weigh) ** 0.5)[:, None]
-    phi4 = numpy.dot(phi, phi.T) ** 2
+    def _eval_gto(self, coord, weigh):
+        raise NotImplementedError
 
-    from pyscf.lib import pivoted_cholesky
-    chol, perm, rank = pivoted_cholesky(phi4, tol=tol, lower=False)
-    nip = min(nip, rank)
-    err = chol[nip-1, nip-1] # / chol[0, 0]
+    def _select(self, ia, coord=None, weigh=None):
+        mol = self.mol
+        c_isdf = self.c_isdf
+        tol = self.tol
 
-    mask = perm[:nip]
-    info = "Atom %4d %3s: nao = % 4d, %6d -> %4d, err = % 6.4e" % (
-        ia, sym, nao, weigh.size, nip, err
-    )
+        sym = mol.atom_symbol(ia)
+        nao = (lambda s: s[3] - s[2])(mol.aoslice_by_atom()[ia])
+        
+        ng = coord.shape[0]
+        assert coord.shape == (ng, 3)
+        assert weigh.shape == (ng,)
 
-    return coord[mask], weigh[mask], (ia, info)
+        if ng <= 0:
+            info = "Atom %4d %3s: nao = % 4d, %6d -> %4d, err = % 6.4e" % (
+                ia, sym, nao, weigh.size, 0, 0.0
+            )
+            return coord, weigh, (ia, info)
 
-class InterpolatingPoints(pyscf.dft.gen_grid.Grids):
-    _keys = pyscf.dft.gen_grid.Grids._keys | set([
-        'c_isdf', 'tol', 'batch_size'
-    ])
+        nip = int(c_isdf * nao)
+        nip = min(nip, ng)
 
-    def __init__(self, *args, **kwargs):
-        self.c_isdf = 10
-        self.tol = 1e-20
-        super().__init__(*args, **kwargs)
+        phi  = self._eval_gto(coord, weigh)
+        phi4 = numpy.dot(phi, phi.T) ** 2
+
+        from pyscf.lib import pivoted_cholesky
+        chol, perm, rank = pivoted_cholesky(phi4, tol=tol, lower=False)
+        nip = min(nip, rank)
+        err = chol[nip-1, nip-1]
+
+        mask = perm[:nip]
+        info = "Atom %4d %3s: nao = % 4d, %6d -> %4d, err = % 6.4e" % (
+            ia, sym, nao, weigh.size, nip, err
+        )
+
+        return coord[mask], weigh[mask], (ia, info)
 
     def build(self, *args, **kwargs):
         '''
@@ -89,20 +97,26 @@ class InterpolatingPoints(pyscf.dft.gen_grid.Grids):
 
         cput0 = (logger.process_clock(), logger.perf_counter())
         for ia, m in enumerate(divide(mol.atom_coords(), self.coords)):
-            tmp = select(
-                mol, ia, self.coords[m], self.weights[m],
-                self.c_isdf, self.tol
-                )
+            tmp = self._select(ia, self.coords[m], self.weights[m])
             coords.append(tmp[0])
             weights.append(tmp[1])
             log.info(tmp[2][1])
 
+        log.info('Total number of interpolating points = %d', len(self.weights))
         log.timer("Building Interpolating Points", *cput0)
         self.coords  = numpy.vstack(coords)
         self.weights = numpy.hstack(weights)
         return self
 
-Grids = InterpolatingPoints
+class BeckeGridsForMolecule(InterpolatingPointsMixin, pyscf.dft.gen_grid.Grids):
+    _keys = pyscf.dft.gen_grid.Grids._keys | set(["c_isdf", "tol"])
+
+    def _eval_gto(self, coord, weigh):
+        phi = numint.eval_ao(self.mol, coord, deriv=0, shls_slice=None)
+        phi *= (numpy.abs(weigh) ** 0.5)[:, None]
+        return phi
+
+Grids = BeckeGrids = BeckeGridsForMolecule
 
 if __name__ == "__main__":
     m = pyscf.gto.M(
@@ -116,7 +130,7 @@ if __name__ == "__main__":
         """, basis="ccpvqz", verbose=0
     )
 
-    grid = InterpolatingPoints(m)
+    grid = Grids(m)
     grid.level   = 0
     grid.verbose = 6
     grid.c_isdf  = 30
