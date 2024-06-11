@@ -6,20 +6,6 @@ from pyscf import lib
 from pyscf.lib import logger
 from pyscf.dft import numint
 import pyscf.dft.gen_grid
-
-def divide(xa: numpy.ndarray, xg: numpy.ndarray) -> numpy.ndarray:
-    na = xa.shape[0]
-    ng = xg.shape[0]
-
-    assert xa.shape == (na, 3)
-    assert xg.shape == (ng, 3)
-    assert na < ng
-
-    d = numpy.linalg.norm(xa[:, None, :] - xg[None, :, :], axis=2)
-    assert d.shape == (na, ng)
-
-    ind = numpy.argmin(d, axis=1)
-    return [numpy.where(ind == ia)[0] for ia in range(na)]
     
 
 class InterpolatingPointsMixin(lib.StreamObject):
@@ -35,10 +21,9 @@ class InterpolatingPointsMixin(lib.StreamObject):
     def _divide(self, coord):
         raise NotImplementedError
 
-    def _select(self, ia, coord=None, weigh=None):
+    def _select(self, ia, coord=None, weigh=None, c_isdf=None, tol=None):
         mol = self.mol
-        c_isdf = self.c_isdf
-        tol = self.tol
+        assert not (c_isdf is None and tol is None)
 
         sym = mol.atom_symbol(ia)
         nao = (lambda s: s[3] - s[2])(mol.aoslice_by_atom()[ia])
@@ -51,9 +36,9 @@ class InterpolatingPointsMixin(lib.StreamObject):
             info = "Atom %4d %3s: nao = % 4d, %6d -> %4d, err = % 6.4e" % (
                 ia, sym, nao, weigh.size, 0, 0.0
             )
-            return coord, weigh, (ia, info)
+            return coord, weigh, info
 
-        nip = int(c_isdf * nao)
+        nip = ng if c_isdf is None else int(c_isdf) * nao
         nip = min(nip, ng)
 
         phi  = self._eval_gto(coord, weigh)
@@ -69,50 +54,91 @@ class InterpolatingPointsMixin(lib.StreamObject):
             ia, sym, nao, weigh.size, nip, err
         )
 
-        return coord[mask], weigh[mask], (ia, info)
+        return coord[mask], weigh[mask], info
 
     def build(self, *args, **kwargs):
         '''
-        Build ISDF grids.
+        Build ISDF grids. The grids are selected by local
+        Pivoted Cholesky decomposition.
+
+        If both self.c_isdf and self.tol are None, all grids
+        will be used as the interpolating points. Otherwise,
+        if self.c_isdf is set, the max number of interpolating
+        points for each atom is self.c_isdf * nao.
         '''
-        super().build(*args, **kwargs)
 
         log = logger.new_logger(self, self.verbose)
-        if self.c_isdf is not None:
-            log.info('\nSelecting interpolating points with Pivoted Cholesky decomposition.')
-            log.info('c_isdf = %d', self.c_isdf)
-        else:
-            log.info('No c_isdf is specified. Using all grids.')
+        c_isdf = kwargs.get("c_isdf", self.c_isdf)
+        tol = kwargs.get("tol", self.tol)
+        if c_isdf is None and tol is None:
+            log.info('c_isdf and tol are not specified. Using all grids.')
             return self
+        
+        log.info('\nSet up interpolating points with Pivoted Cholesky decomposition.')
+        log.info("c_isdf = %s, tol = %s", c_isdf, tol)
+        assert self.coords is not None
+        assert self.weights is not None
 
         coords = []
         weights = []
 
         cput0 = (logger.process_clock(), logger.perf_counter())
-        for ia, m in enumerate(self._divide(self.coords)):
-            tmp = self._select(ia, self.coords[m], self.weights[m])
-            coords.append(tmp[0])
-            weights.append(tmp[1])
-            log.info(tmp[2][1])
+        for ia, mask in enumerate(self._divide(self.coords)):
+            tmp = self._select(
+                ia, self.coords[mask],
+                self.weights[mask],
+                c_isdf=c_isdf, tol=tol
+                )
+            c, w, info = tmp
 
-        log.info('Total number of interpolating points = %d', len(self.weights))
-        log.timer("Building Interpolating Points", *cput0)
+            coords.append(c)
+            weights.append(w)
+            log.info(info)
+
         self.coords  = numpy.vstack(coords)
+        log.info('Selected %d interpolating points out of %d', self.coords.shape[0], len(self.weights))
         self.weights = numpy.hstack(weights)
-        return self
+        log.timer("Building Interpolating Points", *cput0)
 
-class BeckeGridsForMolecule(InterpolatingPointsMixin, pyscf.dft.gen_grid.Grids):
+        return self
+    
+    def kernel(self, *args, **kwargs):
+        return self.build(*args, **kwargs)
+
+class BeckeGrids(InterpolatingPointsMixin, pyscf.dft.gen_grid.Grids):
     _keys = pyscf.dft.gen_grid.Grids._keys | set(["c_isdf", "tol"])
 
+    def __init__(self, mol, *args, **kwargs):
+        self.mol = mol
+        pyscf.dft.gen_grid.Grids.__init__(self, mol, *args, **kwargs)
+
+    def build(self, *args, **kwargs):
+        pyscf.dft.gen_grid.Grids.build(self, *args, **kwargs)
+        return super().build(*args, **kwargs)
+    
     def _divide(self, coord):
-        return super()._divide(coord)
+        xa = self.mol.atom_coords()
+        xg = coord
+
+        na = xa.shape[0]
+        ng = xg.shape[0]
+
+        assert xa.shape == (na, 3)
+        assert xg.shape == (ng, 3)
+        assert na < ng
+
+        d = numpy.linalg.norm(xa[:, None, :] - xg[None, :, :], axis=2)
+        assert d.shape == (na, ng)
+
+        ind = numpy.argmin(d, axis=0)
+        return [numpy.where(ind == ia)[0] for ia in range(na)]
 
     def _eval_gto(self, coord, weigh):
         phi = numint.eval_ao(self.mol, coord, deriv=0, shls_slice=None)
         phi *= (numpy.abs(weigh) ** 0.5)[:, None]
         return phi
 
-Grids = BeckeGrids = BeckeGridsForMolecule
+Grids = BeckeGridsForMolecule = BeckeGrids
 
 if __name__ == "__main__":
     m = pyscf.gto.M(
@@ -128,6 +154,13 @@ if __name__ == "__main__":
 
     grid = Grids(m)
     grid.level   = 0
-    grid.verbose = 6
-    grid.c_isdf  = 30
-    grid.kernel()
+    grid.verbose = 666
+
+    # Use c_isdf to control the number of interpolating points
+    grid.build(c_isdf=10, tol=1e-20)
+
+    # Use tol to control the interpolation error
+    grid.build(c_isdf=None, tol=1e-20)
+
+    # Use all grids as the interpolating points
+    grid.build(c_isdf=None, tol=None)
