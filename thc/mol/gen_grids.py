@@ -19,7 +19,21 @@ class InterpolatingPointsMixin(lib.StreamObject):
         raise NotImplementedError
     
     def _divide(self, coord):
-        raise NotImplementedError
+        xa = self.mol.atom_coords()
+        xg = coord
+
+        na = xa.shape[0]
+        ng = xg.shape[0]
+
+        assert xa.shape == (na, 3)
+        assert xg.shape == (ng, 3)
+        assert na < ng
+
+        d = numpy.linalg.norm(xa[:, None, :] - xg[None, :, :], axis=2)
+        assert d.shape == (na, ng)
+
+        ind = numpy.argmin(d, axis=0)
+        return [numpy.where(ind == ia)[0] for ia in range(na)]
 
     def _select(self, ia, coord=None, weigh=None, c_isdf=None, tol=None):
         mol = self.mol
@@ -90,9 +104,9 @@ class InterpolatingPointsMixin(lib.StreamObject):
                 c_isdf=c_isdf, tol=tol
                 )
             c, w, info = tmp
-
             coords.append(c)
             weights.append(w)
+
             log.info(info)
 
         self.coords  = numpy.vstack(coords)
@@ -115,23 +129,6 @@ class BeckeGrids(InterpolatingPointsMixin, pyscf.dft.gen_grid.Grids):
     def build(self, *args, **kwargs):
         pyscf.dft.gen_grid.Grids.build(self, *args, **kwargs)
         return super().build(*args, **kwargs)
-    
-    def _divide(self, coord):
-        xa = self.mol.atom_coords()
-        xg = coord
-
-        na = xa.shape[0]
-        ng = xg.shape[0]
-
-        assert xa.shape == (na, 3)
-        assert xg.shape == (ng, 3)
-        assert na < ng
-
-        d = numpy.linalg.norm(xa[:, None, :] - xg[None, :, :], axis=2)
-        assert d.shape == (na, ng)
-
-        ind = numpy.argmin(d, axis=0)
-        return [numpy.where(ind == ia)[0] for ia in range(na)]
 
     def _eval_gto(self, coord, weigh):
         phi = numint.eval_ao(self.mol, coord, deriv=0, shls_slice=None)

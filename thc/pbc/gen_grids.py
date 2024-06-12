@@ -12,6 +12,7 @@ from pyscf.dft.gen_grid import nwchem_prune, gen_atomic_grids
 from pyscf.pbc.gto import eval_gto as pbc_eval_gto
 libpbc = lib.load_library('libpbc')
 
+import thc
 from thc.mol.gen_grids import InterpolatingPointsMixin
 
 # class InterpolatingPoints(thc.mol.gen_grids.InterpolatingPoints):
@@ -95,10 +96,36 @@ from thc.mol.gen_grids import InterpolatingPointsMixin
 
 # Grids = InterpolatingPoints
 
-class UniformGridsForSolid(InterpolatingPointsMixin, pyscf.pbc.dft.gen_grid.UniformGrids):
+class UniformGrids(InterpolatingPointsMixin, pyscf.pbc.dft.gen_grid.UniformGrids):
     def __init__(self, cell):
         self.mol = self.cell = cell
         pyscf.pbc.dft.gen_grid.UniformGrids.__init__(self, cell)
+
+    def build(self, *args, **kwargs):
+        pyscf.pbc.dft.gen_grid.UniformGrids.build(self, *args, **kwargs)
+        self.coords = pyscf.pbc.gto.get_uniform_grids(self.cell, self.mesh, wrap_around=False)
+        return thc.mol.gen_grids.InterpolatingPointsMixin.build(self, *args, **kwargs)
+    
+    def _divide(self, coord):
+        rcut = pyscf.pbc.gto.eval_gto._estimate_rcut(self.cell)
+        rcut = rcut.min()
+        xa = self.mol.atom_coords() + self.cell.get_lattice_Ls(rcut=rcut).reshape(-1, 1, 3)
+        xg = coord
+
+        nimg = xa.shape[0]
+        na = xa.shape[1]
+        ng = xg.shape[0]
+
+        assert xa.shape == (nimg, na, 3)
+        assert xg.shape == (ng, 3)
+        assert na < ng
+
+        d = numpy.linalg.norm(xg[None, None, :, :] - xa[:, :, None, :], axis=3)
+        d = numpy.min(d, axis=0)
+        assert d.shape == (na, ng)
+
+        ind = numpy.argmin(d, axis=0)
+        return [numpy.where(ind == ia)[0] for ia in range(na)]
 
     def _eval_gto(self, coord, weigh):
         from pyscf.pbc.dft import numint
@@ -106,17 +133,14 @@ class UniformGridsForSolid(InterpolatingPointsMixin, pyscf.pbc.dft.gen_grid.Unif
         phi *= (numpy.abs(weigh) ** 0.5)[:, None]
         return phi
     
-class BeckeGridsForSolid(InterpolatingPointsMixin, pyscf.pbc.dft.gen_grid.UniformGrids):
-    pass
-    # def __init__(self, cell):
-    #     self.mol = self.cell = cell
-    #     pyscf.pbc.dft.gen_grid.UniformGrids.__init__(self, cell)
+class BeckeGrids(UniformGrids, pyscf.pbc.dft.gen_grid.BeckeGrids):
+    def __init__(self, cell):
+        self.mol = self.cell = cell
+        pyscf.pbc.dft.gen_grid.BeckeGrids.__init__(self, cell)
 
-    # def _eval_gto(self, coord, weigh):
-    #     from pyscf.pbc.dft import numint
-    #     phi = numint.eval_ao(self.cell, coord, deriv=0, shls_slice=None)
-    #     phi *= (numpy.abs(weigh) ** 0.5)[:, None]
-    #     return phi
+    def build(self, *args, **kwargs):
+        pyscf.pbc.dft.gen_grid.BeckeGrids.build(self, *args, **kwargs)
+        return thc.mol.gen_grids.InterpolatingPointsMixin.build(self, *args, **kwargs)
 
 if __name__ == "__main__":
     c   = pyscf.pbc.gto.Cell()
@@ -131,12 +155,18 @@ if __name__ == "__main__":
                 C     0.8917  2.6751  2.6751'''
     c.basis  = 'gth-szv'
     c.pseudo = 'gth-pade'
-    c.verbose = 4
+    c.verbose = 0
+    c.unit = 'aa'
     c.build()
 
-    grid = UniformGridsForSolid(c)
-    grid.mesh = [4, 4, 4]
+    grid = UniformGrids(c)
+    grid.mesh = [20, 20, 20]
+    grid.verbose = 4
+    grid.c_isdf  = None
+    grid.kernel()
+
+    grid = BeckeGrids(c)
     grid.level = 0
-    grid.verbose = 6
-    grid.c_isdf  = 40
+    grid.verbose = 4
+    grid.c_isdf  = None
     grid.kernel()
