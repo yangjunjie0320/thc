@@ -124,24 +124,34 @@ if __name__ == '__main__':
         O   -5.0373186   -5.2694388   -1.2581917
         H   -4.2054186   -5.5931034   -0.8297803
         H   -4.7347234   -4.8522045   -2.1034720
-        """, basis="ccpvqz", verbose=0
+        """, basis="ccpvdz", verbose=0
     )
 
     import thc
     thc = thc.LS(m)
+    thc.grids.level  = 3
     thc.verbose      = 6
-    thc.grids.level  = 0
-    thc.grids.c_isdf = 25
+    thc.grids.c_isdf = None
+    thc.grids.tol    = 1e-20
     thc.max_memory   = 500
     thc.build()
 
-    vv = thc.coul
-    xx = thc.xipt
+    coul = thc.coul
+    xipt = thc.xipt
 
     from pyscf.lib import unpack_tril
-    df_chol_ref = unpack_tril(thc.with_df._cderi)
-    df_chol_sol = numpy.einsum("QI,Im,In->Qmn", vv, xx, xx, optimize=True)
+    a0 = a1 = 0 # slice for auxilary basis
+    for cderi in thc.with_df.loop(blksize=50):
+        a1 = a0 + cderi.shape[0]
 
-    err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
-    err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol)
-    print("Method = %s, Error = % 6.4e % 6.4e" % ("cholesky", err1, err2))
+        df_chol_sol = numpy.einsum("QI,Im,In->Qmn", coul[a0:a1], xipt, xipt, optimize=True)
+        df_chol_ref = unpack_tril(cderi)
+
+        err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
+        err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol)
+        print("err[%4d:%4d] Max: %6.4e, Mean: %6.4e" % (a0, a1, err1, err2))
+        a0 = a1
+
+        df_chol_sol = None
+        df_chol_ref = None
+
