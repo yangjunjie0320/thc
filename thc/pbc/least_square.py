@@ -8,13 +8,13 @@ from pyscf.pbc.dft import numint
 from pyscf.lib import logger
 
 import thc
-from thc.pbc.gen_grids import InterpolatingPoints
+from thc.pbc.gen_grids import BeckeGrids
 
 class LeastSquareFitting(thc.mol.LeastSquareFitting):
     def __init__(self, cell):
         self.cell = self.mol = cell
         self.with_df = pbc.df.GDF(cell)
-        self.grids = InterpolatingPoints(cell)
+        self.grids = BeckeGrids(cell)
         self.grids.level = 0
         self.max_memory = cell.max_memory
 
@@ -34,8 +34,8 @@ class LeastSquareFitting(thc.mol.LeastSquareFitting):
 
 LS = LeastSquareFitting
 
-from thc.pbc.k_least_square import WithKPoint
-LeastSquareFittingWithKPoint = WithKPoint
+# from thc.pbc.k_least_square import WithKPoint
+# LeastSquareFittingWithKPoint = WithKPoint
 
 if __name__ == '__main__':
     c = pyscf.pbc.gto.Cell()
@@ -54,18 +54,16 @@ if __name__ == '__main__':
 
     import thc
     thc = thc.LS(c)
-    thc.with_df = pyscf.pbc.df.rsdf.RSGDF(c)
-    thc.with_df.verbose = 6
     thc.verbose = 6
-    thc.grids.c_isdf = 20
+    thc.grids.c_isdf = 40
     thc.max_memory = 2000
     thc.build()
 
-    vv = thc.coul
-    xx = thc.xipt
+    coul = thc.coul
+    xipt = thc.xipt
 
     from pyscf.lib import pack_tril, unpack_tril
-    df_chol_sol = numpy.einsum("QI,Im,In->Qmn", vv, xx, xx, optimize=True)
+    df_chol_sol = numpy.einsum("QI,Im,In->Qmn", coul, xipt, xipt, optimize=True)
 
     df_chol_ref = numpy.zeros_like(df_chol_sol)
     a0 = a1 = 0 # slice for auxilary basis
@@ -75,5 +73,5 @@ if __name__ == '__main__':
         a0 = a1
 
     err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
-    err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol) / df_chol_ref.size
+    err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol)
     print("Method = %s, Error = % 6.4e % 6.4e" % ("cholesky", err1, err2))

@@ -15,97 +15,15 @@ libpbc = lib.load_library('libpbc')
 import thc
 from thc.mol.gen_grids import InterpolatingPointsMixin
 
-# class InterpolatingPoints(thc.mol.gen_grids.InterpolatingPoints):
-#     def __init__(self, cell):
-#         self.cell = cell
-#         thc.mol.gen_grids.InterpolatingPoints.__init__(self, cell)
-
-#     gen_partition = gen_partition
-
-#     def make_mask(self, cell, coords, relativity=0, shls_slice=None, verbose=None):
-#         if cell is None: cell = self.cell
-#         if coords is None: coords = self.coords
-#         from pyscf.pbc.dft.gen_grid import make_mask
-#         return make_mask(cell, coords, relativity, shls_slice, verbose)
-
-#     def build(self, cell=None, with_non0tab=False):
-#         '''
-#         Build ISDF grids.
-#         '''
-#         if cell is None: cell = self.cell
-#         log = logger.new_logger(self, self.verbose)
-#         log.info('\nSet up interpolating points with Pivoted Cholesky decomposition.')
-#         if self.c_isdf is not None:
-#             log.info('c_isdf = %d', self.c_isdf)
-
-#         grid = zip(
-#             cell.aoslice_by_atom(),
-#             *self.gen_partition(
-#                 cell, self.atom_grid,
-#                 radi_method=self.radi_method,
-#                 level=self.level,
-#                 prune=self.prune,
-#                 concat=False
-#             )
-#         )
-
-#         cput0 = (logger.process_clock(), logger.perf_counter())
-
-#         coords = []
-#         weights = []
-
-#         for ia, (s, c, w) in enumerate(grid):
-#             sym = cell.atom_symbol(ia)
-#             nao = s[3] - s[2]
-
-#             phi  = numint.eval_ao(cell, c, deriv=0, shls_slice=None)
-#             phi *= (numpy.abs(w) ** 0.5)[:, None]
-#             ng   = phi.shape[0]
-
-#             nip = int(self.c_isdf) * nao if self.c_isdf else ng
-#             nip = min(nip, ng)
-            
-#             from pyscf.lib import pivoted_cholesky
-#             phi4 = pyscf.lib.dot(phi, phi.T) ** 2
-#             chol, perm, rank = pivoted_cholesky(phi4, tol=self.tol, lower=False)
-#             err = chol[nip-1, nip-1] / chol[0, 0]
-
-#             mask = perm[:nip]
-#             coords.append(c[mask])
-#             weights.append(w[mask])
-
-#             log.info(
-#                 "Atom %4d %3s: nao = % 4d, %6d -> %4d, err = % 6.4e" % (
-#                     ia, sym, nao, w.size, nip, err
-#                 )
-#             )
-
-#         log.timer("Building Interpolating Points", *cput0)
-
-#         self.coords  = numpy.vstack(coords)
-#         self.weights = numpy.hstack(weights)
-
-#         if with_non0tab:
-#             self.non0tab = self.make_mask(cell, self.coords)
-#             self.screen_index = self.non0tab
-#         else:
-#             self.screen_index = self.non0tab = None
-
-#         log.info('Total number of interpolating points = %d', len(self.weights))
-#         return self
-
-# Grids = InterpolatingPoints
-
-class UniformGrids(InterpolatingPointsMixin, pyscf.pbc.dft.gen_grid.UniformGrids):
+class BeckeGrids(InterpolatingPointsMixin, pyscf.pbc.dft.gen_grid.BeckeGrids):
     def __init__(self, cell):
         self.mol = self.cell = cell
-        pyscf.pbc.dft.gen_grid.UniformGrids.__init__(self, cell)
+        pyscf.pbc.dft.gen_grid.BeckeGrids.__init__(self, cell)
 
     def build(self, *args, **kwargs):
-        pyscf.pbc.dft.gen_grid.UniformGrids.build(self, *args, **kwargs)
-        self.coords = pyscf.pbc.gto.get_uniform_grids(self.cell, self.mesh, wrap_around=False)
+        pyscf.pbc.dft.gen_grid.BeckeGrids.build(self, *args, **kwargs)
         return thc.mol.gen_grids.InterpolatingPointsMixin.build(self, *args, **kwargs)
-    
+
     def _divide(self, coord):
         rcut = pyscf.pbc.gto.eval_gto._estimate_rcut(self.cell)
         rcut = rcut.min()
@@ -132,14 +50,15 @@ class UniformGrids(InterpolatingPointsMixin, pyscf.pbc.dft.gen_grid.UniformGrids
         phi = numint.eval_ao(self.cell, coord, deriv=0, shls_slice=None)
         phi *= (numpy.abs(weigh) ** 0.5)[:, None]
         return phi
-    
-class BeckeGrids(UniformGrids, pyscf.pbc.dft.gen_grid.BeckeGrids):
+
+class UniformGrids(BeckeGrids, pyscf.pbc.dft.gen_grid.UniformGrids):
     def __init__(self, cell):
         self.mol = self.cell = cell
-        pyscf.pbc.dft.gen_grid.BeckeGrids.__init__(self, cell)
+        pyscf.pbc.dft.gen_grid.UniformGrids.__init__(self, cell)
 
     def build(self, *args, **kwargs):
-        pyscf.pbc.dft.gen_grid.BeckeGrids.build(self, *args, **kwargs)
+        pyscf.pbc.dft.gen_grid.UniformGrids.build(self, *args, **kwargs)
+        self.coords = pyscf.pbc.gto.get_uniform_grids(self.cell, self.mesh, wrap_around=False)
         return thc.mol.gen_grids.InterpolatingPointsMixin.build(self, *args, **kwargs)
 
 if __name__ == "__main__":
