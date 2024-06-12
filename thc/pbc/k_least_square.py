@@ -45,11 +45,21 @@ class WithKPoints(LeastSquareFitting):
 
         self.dump_flags()
         cput0 = (logger.process_clock(), logger.perf_counter())
+        
+        from pyscf.pbc.lib.kpts_helper import get_kconserv
+        vk = self.with_df.kpts
+        kconserv3 = get_kconserv(self.cell, vk)
+        kconserv2 = kconserv3[:, :, 0].T
+        nk = vk.shape[0]
+        nq = len(numpy.unique(kconserv2))
+        assert nk == nq
 
-        nq = nk = len(self.with_df.kpts)
         phi0 = self.eval_gto(grids.coords, grids.weights, kpt=self.with_df.kpts[0])
-        zeta0 = lib.dot(phi0, phi0.conj().T) ** 2
         ng, nao = phi0.shape
+        naux = with_df.get_naoaux()
+
+        zeta0 = lib.dot(phi0, phi0.conj().T) ** 2
+        zeta0 = zeta0.real
         chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta0, tol=self.tol, lower=False)
         nip = rank
 
@@ -58,75 +68,55 @@ class WithKPoints(LeastSquareFitting):
         err  = abs(chol[nip - 1, nip - 1])
         log.info("Pivoted Cholesky rank: %d / %d, err = %6.4e", rank, ng, err)
 
-        xipt_k = self.eval_gto(grids.coords[perm], grids.weights[perm], kpts=self.with_df.kpts)
+        xipt_k = self.eval_gto(grids.coords[perm], grids.weights[perm], kpts=vk, kpt=None)
         assert xipt_k.shape == (nk, nip, nao)
 
-        zeta_q = numpy.zeros((nq, nip, nip), dtype=zeta0.dtype)
+        coul_q = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
+        for q in range(nq):
+            vq = vk[q]
 
-        for k1, vk1 in enumerate(self.with_df.kpts):
-            for k2, vk2 in enumerate(self.with_df.kpts):
-                q = kcons[k1, k2]
-                vq = self.with_df.kpts[q]
+            zq = numpy.zeros((nip, nip),  dtype=xipt_k.dtype)
+            jq = numpy.zeros((naux, nip), dtype=xipt_k.dtype)
 
-                zeta1 = lib.dot(xipt_k[k1], xipt_k[k1].conj().T)
-                zeta2 = lib.dot(xipt_k[k2], xipt_k[k2].conj().T)
-                zeta_q[q] = zeta1 * zeta2.conj()
+            for k1, vk1 in enumerate(vk):
+                k2 = kconserv2[q, k1]
+                vk2 = vk[k2]
 
+                z1 = lib.dot(xipt_k[k1], xipt_k[k1].conj().T)
+                z2 = lib.dot(xipt_k[k2], xipt_k[k2].conj().T)
+                zq += z1 * z2.conj()
 
-        # for ik, kpt in enumerate(self.with_df.kpts):
-        #     phi_k  = self.eval_gto(grids.coords, grids.weights, kpt=kpt)
-        #     zeta_k = lib.dot(phi_k, phi_k.conj().T)
-        #     zeta_k *= zeta_k.conj()
-        #     ng, nao = phi_k.shape
+                a0 = a1 = 0
+                for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=20, compact=False):
+                    a1 = a0 + cderi_real.shape[0]
+                    cderi = cderi_real + cderi_imag * 1j
+                    cderi = cderi[:jq[a0:a1].shape[0]].reshape(-1, nao, nao)
+                    jq[a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xipt_k[k1].conj(), xipt_k[k2], optimize=True)
 
-        #     if perm is None:
-        #         chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta_k, tol=self.tol, lower=False)
-        #         nip = rank
-            
-        #         perm = perm[:nip]
-        #         chol = chol[:nip, :nip]
-        #         err  = abs(chol[nip - 1, nip - 1])
-        #         log.info("Pivoted Cholesky rank: %d / %d, err = %6.4e", rank, ng, err)
+                    # print("k1 = %d, k2 = %d, q = %d, [%4d:%4d]" % (k1, k2, q, a0, a1))
+                    a0 = a1
 
-        #     xipt = phi_k[perm]
-        #     cput1 = logger.timer(self, "interpolating vectors", *cput0)
+            coul_q[q] = numpy.dot(jq, scipy.linalg.pinv(zq))
+            print(coul_q[q].shape)
 
-        # # # Build the coulomb kernel
-        # # # rhs = numpy.einsum("Qmn,Im,In->QI", cderi, xip, xip)
-        #     naux = with_df.get_naoaux()
-        #     rhs = numpy.zeros((naux, nip))
+        for k1, vk1 in enumerate(vk):
+            for k2, vk2 in enumerate(vk):
+                q = kconserv2[k1, k2]
 
-        # # # TODO: Is this correct?
-        #     blksize = int(self.max_memory * 1e6 * 0.5 / (8 * nao ** 2))
-        #     blksize = max(4, blksize)
+                a0 = a1 = 0
+                for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=20, compact=False):
+                    a1 = a0 + cderi_real.shape[0]
+                    cderi_ref = cderi_real + cderi_imag * 1j
+                    cderi_ref = cderi_ref.reshape(-1, nao, nao)
 
-        #     a0 = a1 = 0 # slice for auxilary basis
-        #     for cderi in with_df.loop(blksize=blksize):
-        #         a1 = a0 + cderi.shape[0]
-        #         for i0, i1 in lib.prange(0, nip, blksize): # slice for interpolating vectors
-        #             # TODO: sum over only the significant shell pairs
-        #             cput = (logger.process_clock(), logger.perf_counter())
+                    print(coul_q[q, a0:a1].shape)
+                    cderi_sol = numpy.einsum("QI,Im,In->Qmn", coul_q[q, a0:a1], xipt_k[k1], xipt_k[k2], optimize=True)
+                    print(cderi_sol.shape)
 
-        #             ind = numpy.arange(nao)
-        #             x2  = xipt[i0:i1, :, numpy.newaxis] * xipt[i0:i1, numpy.newaxis, :]
-        #             x2  = lib.pack_tril(x2 + x2.transpose(0, 2, 1))
-        #             x2[:, ind * (ind + 1) // 2 + ind] *= 0.5
-        #             rhs[a0:a1, i0:i1] += lib.dot(cderi, x2.T)
-        #             logger.timer(self, "RHS [%4d:%4d, %4d:%4d]" % (a0, a1, i0, i1), *cput)
-        #             x2 = None
-        #         a0 = a1
+                    err1 = numpy.max(numpy.abs(cderi_ref - cderi_sol))
+                    err2 = numpy.linalg.norm(cderi_ref - cderi_sol)
 
-        # cput1 = logger.timer(self, "RHS", *cput1)
-
-        # ww = scipy.linalg.solve_triangular(chol.T, rhs.T, lower=True).T
-        # coul = scipy.linalg.solve_triangular(chol, ww.T, lower=False).T
-        
-        # cput1 = logger.timer(self, "solving linear equations", *cput1)
-        # logger.timer(self, "LS-THC", *cput0)
-
-        # self.coul = coul
-        # self.xipt = xipt
-        # return coul, xipt
+                    print("k1 = %d, k2 = %d, q = %d, [%4d:%4d] Max: %6.4e, Mean: %6.4e" % (k1, k2, q, a0, a1, err1, err2))
 
 if __name__ == '__main__':
     import pyscf
@@ -141,7 +131,7 @@ if __name__ == '__main__':
     c.unit = 'bohr'
     c.build()
 
-    kmesh = [4, 4, 4]
+    kmesh = [2, 2, 2]
     kpts  = c.make_kpts(kmesh)
 
     thc = WithKPoints(c, kpts=kpts)
