@@ -9,13 +9,14 @@ from pyscf.lib import logger
 
 import thc
 from thc.pbc.least_square import LeastSquareFitting
-from thc.pbc.gen_grids import Grids
+from thc.pbc.gen_grids import BeckeGrids
 
-class WithKPoint(LeastSquareFitting):
+class WithKPoints(LeastSquareFitting):
     def __init__(self, cell, kpts=None):
+        assert kpts is not None
         self.cell = self.mol = cell
-        self.with_df = pbc.df.GDF(cell, kpts)
-        self.grids = InterpolatingPoints(cell)
+        self.with_df = pbc.df.GDF(cell, kpts=kpts)
+        self.grids = BeckeGrids(cell)
         self.grids.level = 0
         self.max_memory = cell.max_memory
 

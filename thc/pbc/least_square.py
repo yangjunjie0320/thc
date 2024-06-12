@@ -34,7 +34,7 @@ class LeastSquareFitting(thc.mol.LeastSquareFitting):
 
 LS = LeastSquareFitting
 
-# from thc.pbc.k_least_square import WithKPoint
+# from thc.pbc.k_least_square import WithKPoints
 # LeastSquareFittingWithKPoint = WithKPoint
 
 if __name__ == '__main__':
@@ -55,23 +55,27 @@ if __name__ == '__main__':
     import thc
     thc = thc.LS(c)
     thc.verbose = 6
-    thc.grids.c_isdf = 40
+    thc.grids.c_isdf = None
+    thc.grids.tol = 1e-16
     thc.max_memory = 2000
     thc.build()
 
     coul = thc.coul
     xipt = thc.xipt
 
-    from pyscf.lib import pack_tril, unpack_tril
-    df_chol_sol = numpy.einsum("QI,Im,In->Qmn", coul, xipt, xipt, optimize=True)
-
-    df_chol_ref = numpy.zeros_like(df_chol_sol)
+    from pyscf.lib import unpack_tril
     a0 = a1 = 0 # slice for auxilary basis
-    for cderi in thc.with_df.loop(blksize=20):
+    for cderi in thc.with_df.loop(blksize=200):
         a1 = a0 + cderi.shape[0]
-        df_chol_ref[a0:a1] = unpack_tril(cderi)
+
+        df_chol_sol = numpy.einsum("QI,Im,In->Qmn", coul[a0:a1], xipt, xipt, optimize=True)
+        df_chol_ref = unpack_tril(cderi)
+
+        err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
+        err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol)
+        print("err[%4d:%4d] Max: %6.4e, Mean: %6.4e" % (a0, a1, err1, err2))
         a0 = a1
 
-    err1 = numpy.max(numpy.abs(df_chol_ref - df_chol_sol))
-    err2 = numpy.linalg.norm(df_chol_ref - df_chol_sol)
-    print("Method = %s, Error = % 6.4e % 6.4e" % ("cholesky", err1, err2))
+        df_chol_sol = None
+        df_chol_ref = None
+        
