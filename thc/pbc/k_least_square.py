@@ -44,14 +44,12 @@ class WithKPoints(LeastSquareFitting):
             with_df.build()
 
         self.dump_flags()
-
         cput0 = (logger.process_clock(), logger.perf_counter())
 
-        nkpts = len(self.with_df.kpts)
+        nq = nk = len(self.with_df.kpts)
         phi0 = self.eval_gto(grids.coords, grids.weights, kpt=self.with_df.kpts[0])
         zeta0 = lib.dot(phi0, phi0.conj().T) ** 2
         ng, nao = phi0.shape
-
         chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta0, tol=self.tol, lower=False)
         nip = rank
 
@@ -61,13 +59,18 @@ class WithKPoints(LeastSquareFitting):
         log.info("Pivoted Cholesky rank: %d / %d, err = %6.4e", rank, ng, err)
 
         xipt_k = self.eval_gto(grids.coords[perm], grids.weights[perm], kpts=self.with_df.kpts)
-        print(xipt_k.shape)
-        assert 1 == 2
-        zeta = numpy.zeros((nkpts, nip, nip), dtype=zeta0.dtype)
+        assert xipt_k.shape == (nk, nip, nao)
 
-        for i, ki in enumerate(self.with_df.kpts):
-            for j, kj in enumerate(self.with_df.kpts):
-                1 == 2
+        zeta_q = numpy.zeros((nq, nip, nip), dtype=zeta0.dtype)
+
+        for k1, vk1 in enumerate(self.with_df.kpts):
+            for k2, vk2 in enumerate(self.with_df.kpts):
+                q = kcons[k1, k2]
+                vq = self.with_df.kpts[q]
+
+                zeta1 = lib.dot(xipt_k[k1], xipt_k[k1].conj().T)
+                zeta2 = lib.dot(xipt_k[k2], xipt_k[k2].conj().T)
+                zeta_q[q] = zeta1 * zeta2.conj()
 
 
         # for ik, kpt in enumerate(self.with_df.kpts):
