@@ -178,16 +178,11 @@ if __name__ == '__main__':
     thc.grids.c_isdf = None
     thc.grids.tol = None
     thc.grids.mesh = [20, 20, 20]
-    thc.grids.level = 2
-    thc.grids.build()
+    thc.grids.level = 4
+    thc.build()
 
-    phi_k = thc.eval_gto(thc.grids.coords, thc.grids.weights, kpts=kpts)
-    ovlp_k_ref = thc.cell.pbc_intor("int1e_ovlp", kpts=kpts)
-    ovlp_k_ref = numpy.array(ovlp_k_ref)
-    print(ovlp_k_ref.shape)
+    coord0 = numpy.array(thc.grids.coords)
+    weigh0 = numpy.array(thc.grids.weights)
+    phik = thc.eval_gto(coord0, weigh0, kpts=kpts)
 
-    ovlp_k_sol = numpy.einsum("kgm,kgn->kmn", phi_k.conj(), phi_k)
-    print(ovlp_k_sol.shape)
-
-    err = numpy.max(numpy.abs(ovlp_k_ref - ovlp_k_sol))
-    print("npts = %d, err = %g" % (phi_k.shape[0], err))
+    print(phik.shape)
