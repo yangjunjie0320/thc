@@ -9,7 +9,7 @@ from pyscf.lib import logger
 
 import thc
 from thc.pbc.least_square import LeastSquareFitting
-from thc.pbc.gen_grids import BeckeGrids
+from thc.pbc.gen_grids import BeckeGrids, UniformGrids
 
 class WithKPoints(LeastSquareFitting):
     def __init__(self, cell, kpts=None):
@@ -50,18 +50,19 @@ class WithKPoints(LeastSquareFitting):
         vk = self.with_df.kpts
         kconserv3 = get_kconserv(self.cell, vk)
         kconserv2 = kconserv3[:, :, 0].T
+
         nk = vk.shape[0]
         nq = len(numpy.unique(kconserv2))
         assert nk == nq
 
-        phi0 = self.eval_gto(grids.coords, grids.weights, kpt=self.with_df.kpts[0])
+        phi0 = self.eval_gto(grids.coords, grids.weights, kpt=self.with_df.kpts[0]).real
+
         ng, nao = phi0.shape
         naux = with_df.get_naoaux()
 
-        zeta0 = lib.dot(phi0, phi0.conj().T) ** 2
-        zeta0 = zeta0.real
-        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta0, tol=self.tol, lower=False)
-        nip = rank
+        zeta0 = lib.dot(phi0, phi0.T) ** 2
+        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta0, tol=-1, lower=False)
+        nip = 100 # rank * 2
 
         perm = perm[:nip]
         chol = chol[:nip, :nip]
@@ -87,36 +88,52 @@ class WithKPoints(LeastSquareFitting):
                 zq += z1 * z2.conj()
 
                 a0 = a1 = 0
-                for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=20, compact=False):
+                for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=200, compact=False):
                     a1 = a0 + cderi_real.shape[0]
                     cderi = cderi_real + cderi_imag * 1j
-                    cderi = cderi[:jq[a0:a1].shape[0]].reshape(-1, nao, nao)
-                    jq[a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xipt_k[k1].conj(), xipt_k[k2], optimize=True)
+                    # assert cderi.imag.max() < 1e-10
+
+                    cderi = cderi[:jq[a0:a1].shape[0]].reshape(-1, nao, nao) # .real
+                    cderi = numpy.asarray(cderi, dtype=xipt_k.dtype)
+
+                    jq[a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xipt_k[k1], xipt_k[k2].conj(), optimize=True)
 
                     # print("k1 = %d, k2 = %d, q = %d, [%4d:%4d]" % (k1, k2, q, a0, a1))
                     a0 = a1
 
-            coul_q[q] = numpy.dot(jq, scipy.linalg.pinv(zq))
-            print(coul_q[q].shape)
+            u, s, vh = scipy.linalg.svd(zq)
+            mask = s > 1e-10
+            rank = mask.sum()
+            print("q = %d, rank = %d / %d" % (q, rank, nip))
+            zqinv = u[:, mask] @ numpy.diag(1 / s[mask]) @ vh[mask]
+            coul_q[q] = jq @ zqinv
 
         for k1, vk1 in enumerate(vk):
             for k2, vk2 in enumerate(vk):
+                if not (k1 == 0 and k2 == 0):
+                    break
+                
                 q = kconserv2[k1, k2]
+                jq = coul_q[q]
+                assert jq.imag.max() < 1e-10
+                xk1 = xipt_k[k1]
+                xk2 = xipt_k[k2]
+                assert xk1.imag.max() < 1e-10
+                assert xk2.imag.max() < 1e-10
 
                 a0 = a1 = 0
-                for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=20, compact=False):
+                for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=150, compact=False):
                     a1 = a0 + cderi_real.shape[0]
                     cderi_ref = cderi_real + cderi_imag * 1j
-                    cderi_ref = cderi_ref.reshape(-1, nao, nao)
-
-                    print(coul_q[q, a0:a1].shape)
-                    cderi_sol = numpy.einsum("QI,Im,In->Qmn", coul_q[q, a0:a1], xipt_k[k1], xipt_k[k2], optimize=True)
-                    print(cderi_sol.shape)
+                    cderi_ref = cderi_ref[:jq[a0:a1].shape[0]].reshape(-1, nao * nao)
+                    cderi_sol = numpy.einsum("QI,Im,In->Qmn", jq[a0:a1], xk1, xk2.conj(), optimize=True)
+                    cderi_sol = cderi_sol.reshape(-1, nao * nao)
 
                     err1 = numpy.max(numpy.abs(cderi_ref - cderi_sol))
                     err2 = numpy.linalg.norm(cderi_ref - cderi_sol)
 
                     print("k1 = %d, k2 = %d, q = %d, [%4d:%4d] Max: %6.4e, Mean: %6.4e" % (k1, k2, q, a0, a1, err1, err2))
+                    a0 = a1
 
 if __name__ == '__main__':
     import pyscf
@@ -133,12 +150,16 @@ if __name__ == '__main__':
 
     kmesh = [2, 2, 2]
     kpts  = c.make_kpts(kmesh)
+    # print(kpts)
 
     thc = WithKPoints(c, kpts=kpts)
-    thc.with_df._cderi = "/Users/yangjunjie/Downloads/gdf.h5"
+    # thc.with_df._cderi = "/Users/yangjunjie/Downloads/gdf.h5"
     thc.verbose = 6
 
-    thc.grids.c_isdf = 20
+    thc.grids.verbose = 20
+    thc.grids.c_isdf = None
+    thc.grids.tol = None
+    thc.grids.mesh = [15, 15, 15]
     thc.max_memory = 2000
     thc.build()
 

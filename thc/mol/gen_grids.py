@@ -55,7 +55,7 @@ class InterpolatingPointsMixin(lib.StreamObject):
         nip = ng if c_isdf is None else int(c_isdf) * nao
         nip = min(nip, ng)
 
-        phi  = self._eval_gto(coord, weigh)
+        phi  = self._eval_gto(coord, weigh).real
         phi4 = numpy.dot(phi, phi.T) ** 2
 
         from pyscf.lib import pivoted_cholesky
