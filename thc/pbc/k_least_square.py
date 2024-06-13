@@ -28,7 +28,7 @@ class WithKPoints(LeastSquareFitting):
             nk = len(kpts)
             phi = self.cell.pbc_eval_gto("GTOval", coords, kpt=None, kpts=kpts)
             phi = numpy.array(phi)
-            assert phi.shape == (nk, ng, nao)
+            assert phi.shape == (nk, ng, nao), phi.shape
             return numpy.einsum("kxm,x->kxm", phi, numpy.abs(weights) ** 0.5)
         
         elif kpt is not None and kpts is None:
@@ -77,8 +77,8 @@ class WithKPoints(LeastSquareFitting):
         naux = with_df.get_naoaux()
 
         zeta0 = lib.dot(phi0, phi0.T) ** 2
-        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta0, tol=1e-20, lower=False)
-        nip = 100 # rank # * 2
+        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta0, tol=-1.0, lower=False)
+        nip = 400 # rank
 
         perm = perm[:nip]
         chol = chol[:nip, :nip]
@@ -88,53 +88,41 @@ class WithKPoints(LeastSquareFitting):
         xipt_k = self.eval_gto(grids.coords[perm], grids.weights[perm], kpts=vk, kpt=None)
         assert xipt_k.shape == (nk, nip, nao)
 
+        zeta_q = numpy.zeros((nq, nip, nip), dtype=xipt_k.dtype)
         coul_q = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
-        for q in range(nq):
-            if q != 0:
-                break
+        jq = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
 
-            vq = vk[q]
-
-            zq = numpy.zeros((nip, nip),  dtype=xipt_k.dtype)
-            jq = numpy.zeros((naux, nip), dtype=xipt_k.dtype)
-
-            for k1, vk1 in enumerate(vk):
-                k2 = kconserv2[q, k1]
-                vk2 = vk[k2]
-
-                print("k1 = %d, k2 = %d, q = %d" % (k1, k2, q))
-                print("vk1 = %s, vk2 = %s, vq = %s" % (vk1, vk2, vq))
-
-                z1 = lib.dot(xipt_k[k1], xipt_k[k1].conj().T)
-                z2 = lib.dot(xipt_k[k2], xipt_k[k2].conj().T)
-                zq += z1 * z2 # .conj()
+        for k1, vk1 in enumerate(vk):
+            for k2, vk2 in enumerate(vk):
+                q = kconserv2[k1, k2]
+                z1 = numpy.dot(xipt_k[k1], xipt_k[k1].conj().T)
+                z2 = numpy.dot(xipt_k[k2].conj(), xipt_k[k2].T)
+                zeta_q[q] += z1 * z2
 
                 a0 = a1 = 0
                 for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=200, compact=False):
                     a1 = a0 + cderi_real.shape[0]
-                    cderi = cderi_real + cderi_imag * 1j
-                    # assert cderi.imag.max() < 1e-10
+                    b1 = jq[q, a0:a1].shape[0]
 
-                    cderi = cderi[:jq[a0:a1].shape[0]].reshape(-1, nao, nao) # .real
-                    cderi = numpy.asarray(cderi, dtype=xipt_k.dtype)
+                    cderi  = cderi_real + cderi_imag * 1j
+                    cderi  = cderi[:b1].reshape(b1, nao, nao)
 
-                    jq[a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xipt_k[k1], xipt_k[k2].conj(), optimize=True)
+                    jq[q, a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xipt_k[k1].conj(), xipt_k[k2], optimize=True)
 
-                    # print("k1 = %d, k2 = %d, q = %d, [%4d:%4d]" % (k1, k2, q, a0, a1))
-                    a0 = a1
-
-            u, s, vh = scipy.linalg.svd(zq)
-            mask = s > 1e-16
+        for q in range(nq):
+            u, s, vh = scipy.linalg.svd(zeta_q[q])
+            mask = s > 1e-10
             rank = mask.sum()
             err = s[rank - 1]
             print("q = %d, rank = %d / %d, err = %6.4e" % (q, rank, nip, err))
-            zqinv = u[:, mask] @ numpy.diag(1 / s[mask]) @ vh[mask]
-            coul_q[q] = jq @ zqinv
+
+            zinv = u[:, mask] @ numpy.diag(1 / s[mask]) @ vh[mask]
+            coul_q[q] = jq[q] @ zinv
 
         for k1, vk1 in enumerate(vk):
             for k2, vk2 in enumerate(vk):
-                if not (k1 == 0 and k2 == 0):
-                    break
+                # if not (k1 == 0 and k2 == 0):
+                #     break
                 
                 q = kconserv2[k1, k2]
                 jq = coul_q[q]
@@ -143,6 +131,9 @@ class WithKPoints(LeastSquareFitting):
                 xk2 = xipt_k[k2]
                 assert xk1.imag.max() < 1e-10
                 assert xk2.imag.max() < 1e-10
+
+                xk1 = xk1.real
+                xk2 = xk2.real
 
                 a0 = a1 = 0
                 for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=150, compact=False):
@@ -162,9 +153,9 @@ if __name__ == '__main__':
     import pyscf
     from pyscf import pbc
     c = pyscf.pbc.gto.Cell()
-    c.atom = 'He 2.0000 2.0000 2.0000; He 2.0000 2.0000 4.0000'
+    c.atom  = 'He 2.0000 2.0000 2.0000; He 2.0000 2.0000 4.0000'
     c.basis = '321g'
-    c.a = numpy.diag([4, 4, 6])
+    c.a = numpy.diag([4.0000, 4.0000, 6.0000])
     c.unit = 'bohr'
     c.build()
 
@@ -173,16 +164,56 @@ if __name__ == '__main__':
     # print(kpts)
 
     thc = WithKPoints(c, kpts=kpts)
-    thc.verbose = 6
+    thc.verbose = 10
+
+    thc.grids = BeckeGrids(c)
     thc.grids.verbose = 20
     thc.grids.c_isdf = None
     thc.grids.tol = None
-    thc.grids.mesh = [20, 20, 20]
-    thc.grids.level = 4
+    thc.grids.level = 0
     thc.build()
+    assert 1 == 2
 
     coord0 = numpy.array(thc.grids.coords)
     weigh0 = numpy.array(thc.grids.weights)
-    phik = thc.eval_gto(coord0, weigh0, kpts=kpts)
+    ng = len(weigh0)
+    nk = len(kpts)
+    nao = c.nao_nr()
 
-    print(phik.shape)
+    phik = thc.eval_gto(coord0, weigh0, kpts=kpts)
+    assert phik.shape == (nk, ng, nao)
+
+    # ovlp_k_ref = c.pbc_intor("int1e_ovlp", kpts=kpts)
+    # ovlp_k_ref = numpy.array(ovlp_k_ref)
+    # assert ovlp_k_ref.shape == (nk, nao, nao)
+
+    # rho_k1_k2 = numpy.einsum("kxm,lxn->klmnx", phik.conj(), phik)
+    # assert rho_k1_k2.shape == (nk, nk, nao, nao, ng)
+    # ovlp_k_sol = numpy.einsum("kkmnx->kmn", rho_k1_k2)
+    # assert ovlp_k_sol.shape == (nk, nao, nao)
+    # err = numpy.linalg.norm(ovlp_k_ref - ovlp_k_sol)
+    # assert err < 1e-4, err
+
+    kconserv3 = pyscf.pbc.lib.kpts_helper.get_kconserv(c, kpts)
+    kconserv2 = kconserv3[:, :, 0].T
+    nq = len(numpy.unique(kconserv2))
+    vk = kpts
+
+    assert nk == nq
+    zeta = numpy.zeros((nq, ng, ng), dtype=phik.dtype)
+    for k1, vk1 in enumerate(vk):
+        for k2, vk2 in enumerate(vk):
+            q = kconserv2[k1, k2]
+            z1 = numpy.dot(phik[k1], phik[k1].conj().T)
+            z2 = numpy.dot(phik[k2], phik[k2].conj().T)
+            zeta[q] += z1 * z2
+
+
+    for q in range(nq):
+        u, s, vh = scipy.linalg.svd(zeta[q])
+        mask = s > 1e-16
+        rank = mask.sum()
+        err = s[rank - 1]
+        print("q = %d, rank = %d / %d, err = %6.4e" % (q, rank, ng, err))
+
+    

@@ -46,20 +46,19 @@ class BeckeGrids(InterpolatingPointsMixin, pyscf.pbc.dft.gen_grid.BeckeGrids):
         return [numpy.where(ind == ia)[0] for ia in range(na)]
 
     def _eval_gto(self, coord, weigh):
-        from pyscf.pbc.dft import numint
-        phi = numint.eval_ao(self.cell, coord, deriv=0, shls_slice=None)
-        phi *= (numpy.abs(weigh) ** 0.5)[:, None]
-        return phi
-
+        phi = self.cell.pbc_eval_gto("GTOval", coord, kpt=None, kpts=None)
+        return phi * (numpy.abs(weigh) ** 0.5)[:, None]
+    
 class UniformGrids(BeckeGrids, pyscf.pbc.dft.gen_grid.UniformGrids):
     def __init__(self, cell):
         self.mol = self.cell = cell
         pyscf.pbc.dft.gen_grid.UniformGrids.__init__(self, cell)
-        self.coords = pyscf.pbc.gto.get_uniform_grids(self.cell, self.mesh, wrap_around=False)
 
     def build(self, *args, **kwargs):
-        pyscf.pbc.dft.gen_grid.UniformGrids.build(self, *args, **kwargs)
-        return thc.mol.gen_grids.InterpolatingPointsMixin.build(self, *args, **kwargs)
+        log = logger.Logger(self.stdout, self.verbose)
+        self.coords = pyscf.pbc.gto.get_uniform_grids(self.cell, self.mesh, wrap_around=False)
+        thc.mol.gen_grids.InterpolatingPointsMixin.build(self, *args, **kwargs)
+        return self
 
 if __name__ == "__main__":
     c   = pyscf.pbc.gto.Cell()

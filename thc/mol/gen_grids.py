@@ -69,6 +69,12 @@ class InterpolatingPointsMixin(lib.StreamObject):
         )
 
         return coord[mask], weigh[mask], info
+    
+    def dump_flags(self):
+        log = logger.new_logger(self, self.verbose)
+        log.info('\n******** %s ********', self.__class__)
+        log.info('method = %s', self.__class__.__name__)
+        log.info('')
 
     def build(self, *args, **kwargs):
         '''
@@ -84,6 +90,8 @@ class InterpolatingPointsMixin(lib.StreamObject):
         log = logger.new_logger(self, self.verbose)
         c_isdf = kwargs.get("c_isdf", self.c_isdf)
         tol = kwargs.get("tol", self.tol)
+
+        self.dump_flags()
         if c_isdf is None and tol is None:
             log.info('c_isdf and tol are not specified. Using all grids.')
             return self
