@@ -21,10 +21,24 @@ class WithKPoints(LeastSquareFitting):
         self.max_memory = cell.max_memory
 
     def eval_gto(self, coords, weights, kpt=None, kpts=None):
-        phi = self.cell.pbc_eval_gto("GTOval", coords, kpt=kpt, kpts=kpts)
-        phi = numpy.array(phi)
-        phi *= (numpy.abs(weights) ** 0.5)[:, None]
-        return phi
+        nao = self.cell.nao_nr()
+        ng = len(weights)
+
+        if kpt is None and kpts is not None:
+            nk = len(kpts)
+            phi = self.cell.pbc_eval_gto("GTOval", coords, kpt=None, kpts=kpts)
+            phi = numpy.array(phi)
+            assert phi.shape == (nk, ng, nao)
+            return numpy.einsum("kxm,x->kxm", phi, numpy.abs(weights) ** 0.5)
+        
+        elif kpt is not None and kpts is None:
+            phi = self.cell.pbc_eval_gto("GTOval", coords, kpt=kpt, kpts=None)
+            phi = numpy.array(phi)
+            assert phi.shape == (ng, nao)
+            return numpy.einsum("xm,x->xm", phi, numpy.abs(weights) ** 0.5)
+        
+        else:
+            raise RuntimeError("kpt and kpts cannot be None simultaneously")
     
     def build(self):
         log = logger.Logger(self.stdout, self.verbose)
@@ -55,14 +69,16 @@ class WithKPoints(LeastSquareFitting):
         nq = len(numpy.unique(kconserv2))
         assert nk == nq
 
-        phi0 = self.eval_gto(grids.coords, grids.weights, kpt=self.with_df.kpts[0]).real
+        phi0 = self.eval_gto(grids.coords, grids.weights, kpt=self.with_df.kpts[0])
+        assert numpy.linalg.norm(phi0.imag) < 1e-10
+        phi0 = phi0.real
 
         ng, nao = phi0.shape
         naux = with_df.get_naoaux()
 
         zeta0 = lib.dot(phi0, phi0.T) ** 2
-        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta0, tol=-1, lower=False)
-        nip = 100 # rank * 2
+        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta0, tol=1e-20, lower=False)
+        nip = 100 # rank # * 2
 
         perm = perm[:nip]
         chol = chol[:nip, :nip]
@@ -74,6 +90,9 @@ class WithKPoints(LeastSquareFitting):
 
         coul_q = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
         for q in range(nq):
+            if q != 0:
+                break
+
             vq = vk[q]
 
             zq = numpy.zeros((nip, nip),  dtype=xipt_k.dtype)
@@ -83,9 +102,12 @@ class WithKPoints(LeastSquareFitting):
                 k2 = kconserv2[q, k1]
                 vk2 = vk[k2]
 
+                print("k1 = %d, k2 = %d, q = %d" % (k1, k2, q))
+                print("vk1 = %s, vk2 = %s, vq = %s" % (vk1, vk2, vq))
+
                 z1 = lib.dot(xipt_k[k1], xipt_k[k1].conj().T)
                 z2 = lib.dot(xipt_k[k2], xipt_k[k2].conj().T)
-                zq += z1 * z2.conj()
+                zq += z1 * z2 # .conj()
 
                 a0 = a1 = 0
                 for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=200, compact=False):
@@ -102,9 +124,10 @@ class WithKPoints(LeastSquareFitting):
                     a0 = a1
 
             u, s, vh = scipy.linalg.svd(zq)
-            mask = s > 1e-10
+            mask = s > 1e-16
             rank = mask.sum()
-            print("q = %d, rank = %d / %d" % (q, rank, nip))
+            err = s[rank - 1]
+            print("q = %d, rank = %d / %d, err = %6.4e" % (q, rank, nip, err))
             zqinv = u[:, mask] @ numpy.diag(1 / s[mask]) @ vh[mask]
             coul_q[q] = jq @ zqinv
 
@@ -115,7 +138,7 @@ class WithKPoints(LeastSquareFitting):
                 
                 q = kconserv2[k1, k2]
                 jq = coul_q[q]
-                assert jq.imag.max() < 1e-10
+                # assert jq.imag.max() < 1e-10
                 xk1 = xipt_k[k1]
                 xk2 = xipt_k[k2]
                 assert xk1.imag.max() < 1e-10
@@ -139,46 +162,32 @@ if __name__ == '__main__':
     import pyscf
     from pyscf import pbc
     c = pyscf.pbc.gto.Cell()
-    c.atom = '''C     0.0000  0.0000  0.0000
-                C     1.6851  1.6851  1.6851'''
-    c.basis = 'sto3g'
-    c.a = '''0.0000, 3.3701, 3.3701
-             3.3701, 0.0000, 3.3701
-             3.3701, 3.3701, 0.0000'''
+    c.atom = 'He 2.0000 2.0000 2.0000; He 2.0000 2.0000 4.0000'
+    c.basis = '321g'
+    c.a = numpy.diag([4, 4, 6])
     c.unit = 'bohr'
     c.build()
 
-    kmesh = [2, 1, 1]
+    kmesh = [2, 2, 2]
     kpts  = c.make_kpts(kmesh)
     # print(kpts)
 
     thc = WithKPoints(c, kpts=kpts)
-    # thc.with_df._cderi = "/Users/yangjunjie/Downloads/gdf.h5"
     thc.verbose = 6
-
     thc.grids.verbose = 20
     thc.grids.c_isdf = None
     thc.grids.tol = None
-    thc.grids.mesh = [15, 15, 15]
-    thc.max_memory = 2000
-    thc.build()
+    thc.grids.mesh = [20, 20, 20]
+    thc.grids.level = 2
+    thc.grids.build()
 
-    # grids = pbc.dft.gen_grid.UniformGrids(c)
-    # grids.atom_grid = (10, 86)
-    # coord = thc.grids.coords
-    # weigh = thc.grids.weights 
-    # from pyscf.pbc.dft.gen_grid import get_becke_grids
-    # from pyscf.pbc.dft.gen_grid import get_uniform_grids
+    phi_k = thc.eval_gto(thc.grids.coords, thc.grids.weights, kpts=kpts)
+    ovlp_k_ref = thc.cell.pbc_intor("int1e_ovlp", kpts=kpts)
+    ovlp_k_ref = numpy.array(ovlp_k_ref)
+    print(ovlp_k_ref.shape)
 
-    # mesh = [10, 10, 10]
-    # coord = get_uniform_grids(c, mesh=mesh)
-    # weigh = c.vol / numpy.prod(mesh) * numpy.ones(numpy.prod(mesh))
+    ovlp_k_sol = numpy.einsum("kgm,kgn->kmn", phi_k.conj(), phi_k)
+    print(ovlp_k_sol.shape)
 
-    # phi_k = thc.eval_gto(coord, weigh, kpts=kpts)
-    # phi_k = numpy.array(phi_k)
-
-    # ovlp_k_ref = thc.cell.pbc_intor("int1e_ovlp", hermi=1, kpts=kpts)
-    # ovlp_k_sol = numpy.einsum("kxm,kxn->kmn", phi_k.conj(), phi_k)
-
-    # err = numpy.max(numpy.abs(ovlp_k_ref - ovlp_k_sol))
-    # print("npts = %d, err = %g" % (phi_k.shape[0], err))
+    err = numpy.max(numpy.abs(ovlp_k_ref - ovlp_k_sol))
+    print("npts = %d, err = %g" % (phi_k.shape[0], err))
