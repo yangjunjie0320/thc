@@ -148,7 +148,7 @@ if __name__ == '__main__':
     c.unit = 'bohr'
     c.build()
 
-    kmesh = [2, 2, 2]
+    kmesh = [2, 1, 1]
     kpts  = c.make_kpts(kmesh)
     # print(kpts)
 
