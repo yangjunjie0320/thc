@@ -59,8 +59,9 @@ class InterpolatingPointsMixin(lib.StreamObject):
         phi4 = numpy.dot(phi, phi.T) ** 2
 
         from pyscf.lib import pivoted_cholesky
-        chol, perm, rank = pivoted_cholesky(phi4, tol=tol, lower=False)
-        nip = min(nip, rank)
+        chol, perm, rank = pivoted_cholesky(phi4, tol=-1.0, lower=False)
+        nip = min(30 * nao, ng)
+        # nip = 
         err = chol[nip-1, nip-1]
 
         mask = perm[:nip]

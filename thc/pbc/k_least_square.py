@@ -79,10 +79,15 @@ class WithKPoints(LeastSquareFitting):
         # It's a question why we need even more points 
         # than the full rank. The reason might be different
         # k-points have different important grids.
-        # We shoud try to use more if 
+        # We shoud try to use more interpolating points
+        # to get better accuracy. Anyway, we should check it.
+        # Looks like the best strategy is to c_isdf as the proirity
+        # and then use the tol to control the accuracy.
+
+        # We should 1. further 
         zeta0 = lib.dot(phi0, phi0.T) ** 2
         chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta0, tol=1e-16, lower=False)
-        nip = 400 # rank
+        nip = ng # rank
 
         perm = perm[:nip]
         chol = chol[:nip, :nip]
@@ -113,7 +118,12 @@ class WithKPoints(LeastSquareFitting):
 
                     jq[q, a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xipt_k[k1].conj(), xipt_k[k2], optimize=True)
 
+        mask = set()
         for q in range(nq):
+            from scipy.linalg import lapack
+            chol, perm, rank, info = scipy.linalg.lapack.cpstrf(zeta_q[q], tol=1e-16, lower=False)
+            print(perm[:10])
+
             u, s, vh = scipy.linalg.svd(zeta_q[q])
             mask = s > 1e-10
             rank = mask.sum()
@@ -173,7 +183,7 @@ if __name__ == '__main__':
     thc.grids = BeckeGrids(c)
     thc.grids.verbose = 20
     thc.grids.c_isdf = None
-    thc.grids.tol = None
+    thc.grids.tol = -1.0
     thc.grids.level = 0
     thc.build()
     assert 1 == 2
