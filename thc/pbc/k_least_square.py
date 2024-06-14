@@ -76,8 +76,12 @@ class WithKPoints(LeastSquareFitting):
         ng, nao = phi0.shape
         naux = with_df.get_naoaux()
 
+        # It's a question why we need even more points 
+        # than the full rank. The reason might be different
+        # k-points have different important grids.
+        # We shoud try to use more if 
         zeta0 = lib.dot(phi0, phi0.T) ** 2
-        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta0, tol=-1.0, lower=False)
+        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta0, tol=1e-16, lower=False)
         nip = 400 # rank
 
         perm = perm[:nip]
