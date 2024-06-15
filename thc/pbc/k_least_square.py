@@ -85,18 +85,38 @@ class WithKPoints(LeastSquareFitting):
         # and then use the tol to control the accuracy.
 
         # We should 1. further 
-        zeta0 = lib.dot(phi0, phi0.T) ** 2
-        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta0, tol=1e-16, lower=False)
-        nip = ng # rank
+        # zeta0 = lib.dot(phi0, phi0.T) ** 2
+        # chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta0, tol=1e-16, lower=False)
+        # nip = ng # rank
 
-        perm = perm[:nip]
-        chol = chol[:nip, :nip]
-        err  = abs(chol[nip - 1, nip - 1])
-        log.info("Pivoted Cholesky rank: %d / %d, err = %6.4e", rank, ng, err)
+        # perm = perm[:nip]
+        # chol = chol[:nip, :nip]
+        # err  = abs(chol[nip - 1, nip - 1])
+        
 
-        xipt_k = self.eval_gto(grids.coords[perm], grids.weights[perm], kpts=vk, kpt=None)
-        assert xipt_k.shape == (nk, nip, nao)
+        phi_k = self.eval_gto(grids.coords, grids.weights, kpts=vk, kpt=None)
+        nk, ng, nao = phi_k.shape
+        
+        z_q = numpy.zeros((nq, ng, ng), dtype=phi_k.dtype)
+        for k1, vk1 in enumerate(vk):
+            for k2, vk2 in enumerate(vk):
+                q = kconserv2[k1, k2]
+                z1 = numpy.dot(phi_k[k1], phi_k[k1].conj().T)
+                z2 = numpy.dot(phi_k[k2], phi_k[k2].conj().T)
+                z_q[q] += z1 * z2.conj()
 
+        mask = []
+        for q in range(nq):
+            chol, perm, rank, info = scipy.linalg.lapack.cpstrf(z_q[q], tol=1e-20, lower=False)
+            err = chol[rank - 1, rank - 1]
+
+            mask += list(perm[:rank])
+            log.info("Pivoted Cholesky rank: %d / %d, err = %6.4e", rank, ng, err)
+
+        mask = numpy.sort(numpy.unique(mask)) - 1
+        nip = len(mask)
+
+        xipt_k = phi_k[:, mask, :]
         zeta_q = numpy.zeros((nq, nip, nip), dtype=xipt_k.dtype)
         coul_q = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
         jq = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
@@ -105,16 +125,16 @@ class WithKPoints(LeastSquareFitting):
             for k2, vk2 in enumerate(vk):
                 q = kconserv2[k1, k2]
                 z1 = numpy.dot(xipt_k[k1], xipt_k[k1].conj().T)
-                z2 = numpy.dot(xipt_k[k2].conj(), xipt_k[k2].T)
-                zeta_q[q] += z1 * z2
+                z2 = numpy.dot(xipt_k[k2], xipt_k[k2].conj().T)
+                zeta_q[q] += z1 * z2.conj()
 
                 a0 = a1 = 0
                 for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=200, compact=False):
                     a1 = a0 + cderi_real.shape[0]
                     b1 = jq[q, a0:a1].shape[0]
 
-                    cderi  = cderi_real + cderi_imag * 1j
-                    cderi  = cderi[:b1].reshape(b1, nao, nao)
+                    cderi = cderi_real + cderi_imag * 1j
+                    cderi = cderi[:b1].reshape(b1, nao, nao)
 
                     jq[q, a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xipt_k[k1].conj(), xipt_k[k2], optimize=True)
 
