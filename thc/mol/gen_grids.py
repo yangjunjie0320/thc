@@ -61,7 +61,6 @@ class InterpolatingPointsMixin(lib.StreamObject):
         from pyscf.lib import pivoted_cholesky
         chol, perm, rank = pivoted_cholesky(phi4, tol=-1.0, lower=False)
         nip = min(150 * nao, ng)
-        # nip = 
         err = chol[nip-1, nip-1]
 
         mask = perm[:nip]

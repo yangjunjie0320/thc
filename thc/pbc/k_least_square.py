@@ -93,40 +93,52 @@ class WithKPoints(LeastSquareFitting):
         # chol = chol[:nip, :nip]
         # err  = abs(chol[nip - 1, nip - 1])
         
-
         phi_k = self.eval_gto(grids.coords, grids.weights, kpts=vk, kpt=None)
         nk, ng, nao = phi_k.shape
         
-        z_q = numpy.zeros((nq, ng, ng), dtype=phi_k.dtype)
+        z_q = numpy.zeros((nq, ng, ng), dtype=phi_k.real.dtype)
         for k1, vk1 in enumerate(vk):
             for k2, vk2 in enumerate(vk):
                 q = kconserv2[k1, k2]
                 z1 = numpy.dot(phi_k[k1], phi_k[k1].conj().T)
                 z2 = numpy.dot(phi_k[k2], phi_k[k2].conj().T)
-                z_q[q] += z1 * z2.conj()
+                z12 = z1.conj() * z2
+                z_q[q] += z12.real
 
         mask = []
+        chols = []
         for q in range(nq):
-            chol, perm, rank, info = scipy.linalg.lapack.cpstrf(z_q[q], tol=1e-20, lower=False)
-            err = chol[rank - 1, rank - 1]
-
+            chol, perm, rank = lib.scipy_helper.pivoted_cholesky(z_q[q], tol=1e-16, lower=False)
+            err = abs(chol[rank - 1, rank - 1])
             mask += list(perm[:rank])
+            chols.append(chol)
+
             log.info("Pivoted Cholesky rank: %d / %d, err = %6.4e", rank, ng, err)
 
-        mask = numpy.sort(numpy.unique(mask)) - 1
+        mask = numpy.sort(numpy.unique(mask))
         nip = len(mask)
+        
+        zeta_q = z_q[:, mask][:, :, mask]
+
+        # after we get everything, we select the
+        # correct interpolating points and then
+        # solve the least square fitting problem.
+        # chols_new = []
+        # for q in range(nq):
+        #     chol = chols[q]
+        #     chols_new.append(chol[mask][:, mask])
 
         xipt_k = phi_k[:, mask, :]
-        zeta_q = numpy.zeros((nq, nip, nip), dtype=xipt_k.dtype)
+        # zeta_q = numpy.zeros((nq, nip, nip), dtype=xipt_k.dtype)
         coul_q = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
         jq = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
 
         for k1, vk1 in enumerate(vk):
             for k2, vk2 in enumerate(vk):
                 q = kconserv2[k1, k2]
-                z1 = numpy.dot(xipt_k[k1], xipt_k[k1].conj().T)
-                z2 = numpy.dot(xipt_k[k2], xipt_k[k2].conj().T)
-                zeta_q[q] += z1 * z2.conj()
+                # z1 = numpy.dot(xipt_k[k1], xipt_k[k1].conj().T)
+                # z2 = numpy.dot(xipt_k[k2], xipt_k[k2].conj().T)
+                # zeta_q[q] += z1 * z2.conj()
 
                 a0 = a1 = 0
                 for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=200, compact=False):
@@ -138,20 +150,17 @@ class WithKPoints(LeastSquareFitting):
 
                     jq[q, a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xipt_k[k1].conj(), xipt_k[k2], optimize=True)
 
-        mask = set()
         for q in range(nq):
-            from scipy.linalg import lapack
-            chol, perm, rank, info = scipy.linalg.lapack.cpstrf(zeta_q[q], tol=1e-16, lower=False)
-            print(perm[:10])
-
             u, s, vh = scipy.linalg.svd(zeta_q[q])
-            mask = s > 1e-10
+            mask = s > 1e-14
             rank = mask.sum()
-            err = s[rank - 1]
-            print("q = %d, rank = %d / %d, err = %6.4e" % (q, rank, nip, err))
 
+            print("s = \n", s)
+
+            err = s[rank - 1]
+            log.info("q = %d, rank = %d / %d, err = %6.4e", q, rank, nip, err)
             zinv = u[:, mask] @ numpy.diag(1 / s[mask]) @ vh[mask]
-            coul_q[q] = jq[q] @ zinv
+            coul_q[q] = numpy.dot(jq[q], zinv)
 
         for k1, vk1 in enumerate(vk):
             for k2, vk2 in enumerate(vk):
@@ -203,7 +212,7 @@ if __name__ == '__main__':
     thc.grids = BeckeGrids(c)
     thc.grids.verbose = 20
     thc.grids.c_isdf = None
-    thc.grids.tol = -1.0
+    thc.grids.tol = None
     thc.grids.level = 0
     thc.build()
     assert 1 == 2
