@@ -123,10 +123,13 @@ class WithKPoints(LeastSquareFitting):
         # after we get everything, we select the
         # correct interpolating points and then
         # solve the least square fitting problem.
-        # chols_new = []
-        # for q in range(nq):
-        #     chol = chols[q]
-        #     chols_new.append(chol[mask][:, mask])
+        chol_q = []
+        for q in range(nq):
+            chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta_q[q], tol=1e-16, lower=False)
+
+            err = abs(chol[rank - 1, rank - 1])
+            print("q = %d, rank = %d / %d, err = %6.4e" % (q, rank, nip, err))
+            print("s = \n", chol[:rank, :rank])
 
         xipt_k = phi_k[:, mask, :]
         # zeta_q = numpy.zeros((nq, nip, nip), dtype=xipt_k.dtype)
