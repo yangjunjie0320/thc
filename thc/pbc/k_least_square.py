@@ -131,7 +131,7 @@ class WithKPoints(LeastSquareFitting):
         xipt_k = phi_k[:, mask, :]
         # zeta_q = numpy.zeros((nq, nip, nip), dtype=xipt_k.dtype)
         coul_q = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
-        jq = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
+        rhs = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
 
         for k1, vk1 in enumerate(vk):
             for k2, vk2 in enumerate(vk):
@@ -143,12 +143,12 @@ class WithKPoints(LeastSquareFitting):
                 a0 = a1 = 0
                 for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=200, compact=False):
                     a1 = a0 + cderi_real.shape[0]
-                    b1 = jq[q, a0:a1].shape[0]
+                    b1 = rhs[q, a0:a1].shape[0]
 
                     cderi = cderi_real + cderi_imag * 1j
                     cderi = cderi[:b1].reshape(b1, nao, nao)
 
-                    jq[q, a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xipt_k[k1].conj(), xipt_k[k2], optimize=True)
+                    rhs[q, a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xipt_k[k1].conj(), xipt_k[k2], optimize=True)
 
         for q in range(nq):
             u, s, vh = scipy.linalg.svd(zeta_q[q])
@@ -160,7 +160,7 @@ class WithKPoints(LeastSquareFitting):
             err = s[rank - 1]
             log.info("q = %d, rank = %d / %d, err = %6.4e", q, rank, nip, err)
             zinv = u[:, mask] @ numpy.diag(1 / s[mask]) @ vh[mask]
-            coul_q[q] = numpy.dot(jq[q], zinv)
+            coul_q[q] = numpy.dot(rhs[q], zinv)
 
         for k1, vk1 in enumerate(vk):
             for k2, vk2 in enumerate(vk):
@@ -168,7 +168,7 @@ class WithKPoints(LeastSquareFitting):
                 #     break
                 
                 q = kconserv2[k1, k2]
-                jq = coul_q[q]
+                rhs = coul_q[q]
                 # assert jq.imag.max() < 1e-10
                 xk1 = xipt_k[k1]
                 xk2 = xipt_k[k2]
@@ -182,9 +182,13 @@ class WithKPoints(LeastSquareFitting):
                 for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=150, compact=False):
                     a1 = a0 + cderi_real.shape[0]
                     cderi_ref = cderi_real + cderi_imag * 1j
-                    cderi_ref = cderi_ref[:jq[a0:a1].shape[0]].reshape(-1, nao * nao)
-                    cderi_sol = numpy.einsum("QI,Im,In->Qmn", jq[a0:a1], xk1, xk2.conj(), optimize=True)
+                    cderi_ref = cderi_ref[:rhs[a0:a1].shape[0]].reshape(-1, nao * nao)
+                    cderi_sol = numpy.einsum("QI,Im,In->Qmn", rhs[a0:a1], xk1, xk2.conj(), optimize=True)
                     cderi_sol = cderi_sol.reshape(-1, nao * nao)
+
+                    from numpy import savetxt
+                    savetxt(self.cell.stdout, (cderi_ref.real)[:10, :10], fmt="% 6.4e", delimiter=", ", header="\ncderi_ref")
+                    savetxt(self.cell.stdout, (cderi_sol.real)[:10, :10], fmt="% 6.4e", delimiter=", ", header="\ncderi_sol")
 
                     err1 = numpy.max(numpy.abs(cderi_ref - cderi_sol))
                     err2 = numpy.linalg.norm(cderi_ref - cderi_sol)
