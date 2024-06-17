@@ -114,6 +114,8 @@ class WithKPoints(LeastSquareFitting):
                 q = kconserv2[k1, k2]
                 a0 = a1 = 0
 
+                xk1 = xipt_k[k1]
+                xk2 = xipt_k[k2]
                 for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=200, compact=False):
                     a1 = a0 + cderi_real.shape[0]
                     b1 = rhs[q, a0:a1].shape[0]
@@ -121,7 +123,7 @@ class WithKPoints(LeastSquareFitting):
                     cderi = cderi_real + cderi_imag * 1j
                     cderi = cderi[:b1].reshape(b1, nao, nao)
 
-                    rhs[q, a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xipt_k[k1], xipt_k[k2].conj(), optimize=True)
+                    rhs[q, a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xk1, xk2.conj(), optimize=True)
 
                     a0 = a1
 
@@ -147,22 +149,40 @@ class WithKPoints(LeastSquareFitting):
         for k1, vk1 in enumerate(vk):
             for k2, vk2 in enumerate(vk):
                 for k3, vk3 in enumerate(vk):
-                    for k4, vk4 in enumerate(vk):
-                        q12 = kconserv2[k1, k2]
-                        q34 = kconserv2[k3, k4]
+                    k4 = kconserv3[k1, k2, k3]
+                    vk4 = vk[k4]
 
-                        if not q12 == q34:
-                            continue
+                    xk1 = xipt_k[k1]
+                    xk2 = xipt_k[k2]
+                    xk3 = xipt_k[k3]
+                    xk4 = xipt_k[k4]
 
-                        q = q12
+                    q12 = kconserv2[k1, k2]
+                    q34 = kconserv2[k3, k4]
 
-                        # eri_sol = numpy.einsum("QI,Im,Jn,Ko,Lp->QIJKLM", coul_q[q], xipt_k[k1], xipt_k[k2].conj(), xipt_k[k3], xipt_k[k4].conj(), optimize=True)
+                    jq12 = coul_q[q12]
+                    jq34 = coul_q[q34]
 
-                        eri_ref = with_df.get_eri([vk1, vk2, vk3, vk4], compact=False)
+                    if not q12 == 0:
+                        continue
 
-                        print("k1 = %d, k2 = %d, k3 = %d, k4 = %d, q = %d" % (k1, k2, k3, k4, q))
-                        print(eri_ref.shape)
-                
+                    eri_ref = with_df.get_eri([vk1, vk2, vk3, vk4], compact=False)
+                    eri_ref = eri_ref.reshape(nao, nao, nao, nao)
+
+                    eri_sol = numpy.einsum(
+                        "QI,QJ,Im,In,Jk,Jl->mnkl", 
+                        jq12, jq34, 
+                        xk1.conj(), xk2, 
+                        xk3, xk4.conj(), 
+                        optimize=True
+                    )
+
+                    err1 = numpy.max(numpy.abs(eri_ref - eri_sol))
+                    err2 = numpy.linalg.norm(eri_ref - eri_sol)
+
+                    print("k1 = %d, k2 = %d, k3 = %d, k4 = %d, q12 = %d, q34 = %d, Max: %6.4e, Mean: %6.4e" % (k1, k2, k3, k4, q12, q34, err1, err2))
+                    assert err1 < 1e-4
+                    assert err2 < 1e-4
                 # q = kconserv2[k1, k2]
                 # j = coul_q[q]
                 # xk1 = xipt_k[k1]
@@ -195,24 +215,24 @@ if __name__ == '__main__':
     import pyscf
     from pyscf import pbc
     c = pyscf.pbc.gto.Cell()
-    c.atom  = 'He 2.0000 2.0000 2.0000; He 2.0000 2.0000 4.0000'
-    c.basis = '321g'
-    c.a = numpy.diag([4.0000, 4.0000, 6.0000])
+    c.atom  = 'He 2.0000 2.0000 2.0000; He 2.0000 2.0000 6.0000'
+    c.basis = 'sto3g'
+    c.a = numpy.diag([4.0000, 4.0000, 8.0000])
     c.unit = 'bohr'
     c.build()
 
     kmesh = [2, 2, 4]
     kpts  = c.make_kpts(kmesh)
-    # print(kpts)
 
     thc = WithKPoints(c, kpts=kpts)
     thc.verbose = 10
+    thc.df._cderi_to_save = ""
 
-    thc.grids = BeckeGrids(c)
+    thc.grids = UniformGrids(c)
     thc.grids.verbose = 20
     thc.grids.c_isdf = None
-    thc.grids.tol = None
-    thc.grids.level = 0
+    thc.grids.tol    = None
+    thc.grids.mesh   = [12, 12, 12]
     thc.build()
     assert 1 == 2
 
