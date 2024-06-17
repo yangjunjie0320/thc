@@ -7,6 +7,8 @@ from pyscf import lib
 from pyscf.pbc.dft import numint
 from pyscf.lib import logger
 
+from pyscf.lib.scipy_helper import pivoted_cholesky_python as pivoted_cholesky
+
 import thc
 from thc.pbc.least_square import LeastSquareFitting
 from thc.pbc.gen_grids import BeckeGrids, UniformGrids
@@ -96,54 +98,39 @@ class WithKPoints(LeastSquareFitting):
         phi_k = self.eval_gto(grids.coords, grids.weights, kpts=vk, kpt=None)
         nk, ng, nao = phi_k.shape
         
-        z_q = numpy.zeros((nq, ng, ng), dtype=phi_k.real.dtype)
+        z_q = numpy.zeros((nq, ng, ng))
+        
         for k1, vk1 in enumerate(vk):
             for k2, vk2 in enumerate(vk):
                 q = kconserv2[k1, k2]
-                z1 = numpy.dot(phi_k[k1], phi_k[k1].conj().T)
-                z2 = numpy.dot(phi_k[k2], phi_k[k2].conj().T)
-                z12 = z1.conj() * z2
-                z_q[q] += z12.real
+                z12 = numpy.dot(phi_k[k1].conj(), phi_k[k2].T)
+                z_q[q] += (z12 * z12.conj()).real
 
-        mask = []
-        chols = []
+        ww = numpy.zeros(ng)
         for q in range(nq):
-            chol, perm, rank = lib.scipy_helper.pivoted_cholesky(z_q[q], tol=1e-16, lower=False)
+            chol, perm, rank = pivoted_cholesky(z_q[q], tol=1e-16, lower=False)
+            print(numpy.diag(chol)[:rank])
             err = abs(chol[rank - 1, rank - 1])
-            mask += list(perm[:rank])
-            chols.append(chol)
-
             log.info("Pivoted Cholesky rank: %d / %d, err = %6.4e", rank, ng, err)
 
-        mask = numpy.sort(numpy.unique(mask))
-        nip = len(mask)
+            for c, p in zip(numpy.diag(chol)[:rank], perm[:rank]):
+                ww[p] += abs(c)
+
+        m = (ww > 1e-16)
+        nip = m.sum()
+        zeta_q = z_q[:, m][:, :, m]
+        xipt_k = phi_k[:, m, :]
+
+        assert zeta_q.shape == (nq, nip, nip)
+        assert xipt_k.shape == (nk, nip, nao)
         
-        zeta_q = z_q[:, mask][:, :, mask]
-
-        # after we get everything, we select the
-        # correct interpolating points and then
-        # solve the least square fitting problem.
-        chol_q = []
-        for q in range(nq):
-            chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta_q[q], tol=1e-16, lower=False)
-
-            err = abs(chol[rank - 1, rank - 1])
-            print("q = %d, rank = %d / %d, err = %6.4e" % (q, rank, nip, err))
-            print("s = \n", chol[:rank, :rank])
-
-        xipt_k = phi_k[:, mask, :]
-        # zeta_q = numpy.zeros((nq, nip, nip), dtype=xipt_k.dtype)
-        coul_q = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
         rhs = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
 
         for k1, vk1 in enumerate(vk):
             for k2, vk2 in enumerate(vk):
                 q = kconserv2[k1, k2]
-                # z1 = numpy.dot(xipt_k[k1], xipt_k[k1].conj().T)
-                # z2 = numpy.dot(xipt_k[k2], xipt_k[k2].conj().T)
-                # zeta_q[q] += z1 * z2.conj()
-
                 a0 = a1 = 0
+
                 for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=200, compact=False):
                     a1 = a0 + cderi_real.shape[0]
                     b1 = rhs[q, a0:a1].shape[0]
@@ -153,17 +140,19 @@ class WithKPoints(LeastSquareFitting):
 
                     rhs[q, a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xipt_k[k1].conj(), xipt_k[k2], optimize=True)
 
+        coul_q = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
         for q in range(nq):
             u, s, vh = scipy.linalg.svd(zeta_q[q])
-            mask = s > 1e-14
-            rank = mask.sum()
+            zeta_ = u @ numpy.diag(s) @ vh
+            err = numpy.linalg.norm(zeta_ - zeta_q[q])
+            assert err < 1e-10
 
-            print("s = \n", s)
+            m = s > 1e-14
+            rank = m.sum()
 
             err = s[rank - 1]
             log.info("q = %d, rank = %d / %d, err = %6.4e", q, rank, nip, err)
-            zinv = u[:, mask] @ numpy.diag(1 / s[mask]) @ vh[mask]
-            coul_q[q] = numpy.dot(rhs[q], zinv)
+            coul_q[q] = rhs[q] @ u[:, m] @ numpy.diag(1 / s[m]) @ vh[m]
 
         for k1, vk1 in enumerate(vk):
             for k2, vk2 in enumerate(vk):
@@ -171,12 +160,9 @@ class WithKPoints(LeastSquareFitting):
                 #     break
                 
                 q = kconserv2[k1, k2]
-                rhs = coul_q[q]
-                # assert jq.imag.max() < 1e-10
+                j = coul_q[q]
                 xk1 = xipt_k[k1]
                 xk2 = xipt_k[k2]
-                assert xk1.imag.max() < 1e-10
-                assert xk2.imag.max() < 1e-10
 
                 xk1 = xk1.real
                 xk2 = xk2.real
@@ -185,13 +171,13 @@ class WithKPoints(LeastSquareFitting):
                 for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=150, compact=False):
                     a1 = a0 + cderi_real.shape[0]
                     cderi_ref = cderi_real + cderi_imag * 1j
-                    cderi_ref = cderi_ref[:rhs[a0:a1].shape[0]].reshape(-1, nao * nao)
-                    cderi_sol = numpy.einsum("QI,Im,In->Qmn", rhs[a0:a1], xk1, xk2.conj(), optimize=True)
+                    cderi_ref = cderi_ref[:j[a0:a1].shape[0]].reshape(-1, nao * nao)
+                    cderi_sol = numpy.einsum("QI,Im,In->Qmn", j[a0:a1], xk1, xk2, optimize=True)
                     cderi_sol = cderi_sol.reshape(-1, nao * nao)
 
-                    from numpy import savetxt
-                    savetxt(self.cell.stdout, (cderi_ref.real)[:10, :10], fmt="% 6.4e", delimiter=", ", header="\ncderi_ref")
-                    savetxt(self.cell.stdout, (cderi_sol.real)[:10, :10], fmt="% 6.4e", delimiter=", ", header="\ncderi_sol")
+                    # from numpy import savetxt
+                    # savetxt(self.cell.stdout, (cderi_ref.real)[:10, :10], fmt="% 6.4e", delimiter=", ", header="\ncderi_ref")
+                    # savetxt(self.cell.stdout, (cderi_sol.real)[:10, :10], fmt="% 6.4e", delimiter=", ", header="\ncderi_sol")
 
                     err1 = numpy.max(numpy.abs(cderi_ref - cderi_sol))
                     err2 = numpy.linalg.norm(cderi_ref - cderi_sol)
@@ -209,7 +195,7 @@ if __name__ == '__main__':
     c.unit = 'bohr'
     c.build()
 
-    kmesh = [2, 2, 2]
+    kmesh = [2, 2, 4]
     kpts  = c.make_kpts(kmesh)
     # print(kpts)
 
