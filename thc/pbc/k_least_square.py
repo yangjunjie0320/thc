@@ -64,58 +64,41 @@ class WithKPoints(LeastSquareFitting):
         
         from pyscf.pbc.lib.kpts_helper import get_kconserv
         vk = self.with_df.kpts
+        nk = vk.shape[0]
+
         kconserv3 = get_kconserv(self.cell, vk)
         kconserv2 = kconserv3[:, :, 0].T
-
-        nk = vk.shape[0]
+        # kconserv2 = numpy.arange(nk * nk).reshape(nk, nk)
         nq = len(numpy.unique(kconserv2))
         assert nk == nq
 
-        phi0 = self.eval_gto(grids.coords, grids.weights, kpt=self.with_df.kpts[0])
-        assert numpy.linalg.norm(phi0.imag) < 1e-10
-        phi0 = phi0.real
-
-        ng, nao = phi0.shape
-        naux = with_df.get_naoaux()
-
-        # It's a question why we need even more points 
-        # than the full rank. The reason might be different
-        # k-points have different important grids.
-        # We shoud try to use more interpolating points
-        # to get better accuracy. Anyway, we should check it.
-        # Looks like the best strategy is to c_isdf as the proirity
-        # and then use the tol to control the accuracy.
-
-        # We should 1. further 
-        # zeta0 = lib.dot(phi0, phi0.T) ** 2
-        # chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta0, tol=1e-16, lower=False)
-        # nip = ng # rank
-
-        # perm = perm[:nip]
-        # chol = chol[:nip, :nip]
-        # err  = abs(chol[nip - 1, nip - 1])
-        
         phi_k = self.eval_gto(grids.coords, grids.weights, kpts=vk, kpt=None)
         nk, ng, nao = phi_k.shape
+        naux = with_df.get_naoaux()
         
-        z_q = numpy.zeros((nq, ng, ng))
+        z_q = numpy.zeros((nq, ng, ng), dtype=phi_k.dtype)
         
         for k1, vk1 in enumerate(vk):
             for k2, vk2 in enumerate(vk):
                 q = kconserv2[k1, k2]
-                z12 = numpy.dot(phi_k[k1].conj(), phi_k[k2].T)
-                z_q[q] += (z12 * z12.conj()).real
+                phik1 = phi_k[k1]
+                phik2 = phi_k[k2]
+
+                assert phik1.shape == (ng, nao)
+                assert phik2.shape == (ng, nao)
+
+                z_q[q] += numpy.einsum("Jm,Jn,Im,In->JI", phik1.conj(), phik2, phik1, phik2.conj(), optimize=True)
 
         ww = numpy.zeros(ng)
         for q in range(nq):
+            assert numpy.allclose(z_q[q], z_q[q].conj().T)
+
             chol, perm, rank = pivoted_cholesky(z_q[q], tol=1e-16, lower=False)
-            print(numpy.diag(chol)[:rank])
+            ww[perm[:rank]] += abs(numpy.diag(chol)[:rank])
+
             err = abs(chol[rank - 1, rank - 1])
             log.info("Pivoted Cholesky rank: %d / %d, err = %6.4e", rank, ng, err)
-
-            for c, p in zip(numpy.diag(chol)[:rank], perm[:rank]):
-                ww[p] += abs(c)
-
+            
         m = (ww > 1e-16)
         nip = m.sum()
         zeta_q = z_q[:, m][:, :, m]
@@ -138,7 +121,9 @@ class WithKPoints(LeastSquareFitting):
                     cderi = cderi_real + cderi_imag * 1j
                     cderi = cderi[:b1].reshape(b1, nao, nao)
 
-                    rhs[q, a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xipt_k[k1].conj(), xipt_k[k2], optimize=True)
+                    rhs[q, a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xipt_k[k1], xipt_k[k2].conj(), optimize=True)
+
+                    a0 = a1
 
         coul_q = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
         for q in range(nq):
@@ -150,40 +135,61 @@ class WithKPoints(LeastSquareFitting):
             m = s > 1e-14
             rank = m.sum()
 
+            u = u[:, :rank]
+            s = s[:rank]
+            vh = vh[:rank]
+
             err = s[rank - 1]
             log.info("q = %d, rank = %d / %d, err = %6.4e", q, rank, nip, err)
-            coul_q[q] = rhs[q] @ u[:, m] @ numpy.diag(1 / s[m]) @ vh[m]
+            zinv = vh.T.conj() @ numpy.diag(1 / s) @ u.conj().T
+            coul_q[q] = rhs[q] @ zinv
 
         for k1, vk1 in enumerate(vk):
             for k2, vk2 in enumerate(vk):
-                # if not (k1 == 0 and k2 == 0):
-                #     break
+                for k3, vk3 in enumerate(vk):
+                    for k4, vk4 in enumerate(vk):
+                        q12 = kconserv2[k1, k2]
+                        q34 = kconserv2[k3, k4]
+
+                        if not q12 == q34:
+                            continue
+
+                        q = q12
+
+                        # eri_sol = numpy.einsum("QI,Im,Jn,Ko,Lp->QIJKLM", coul_q[q], xipt_k[k1], xipt_k[k2].conj(), xipt_k[k3], xipt_k[k4].conj(), optimize=True)
+
+                        eri_ref = with_df.get_eri([vk1, vk2, vk3, vk4], compact=False)
+
+                        print("k1 = %d, k2 = %d, k3 = %d, k4 = %d, q = %d" % (k1, k2, k3, k4, q))
+                        print(eri_ref.shape)
                 
-                q = kconserv2[k1, k2]
-                j = coul_q[q]
-                xk1 = xipt_k[k1]
-                xk2 = xipt_k[k2]
+                # q = kconserv2[k1, k2]
+                # j = coul_q[q]
+                # xk1 = xipt_k[k1]
+                # xk2 = xipt_k[k2]
 
-                xk1 = xk1.real
-                xk2 = xk2.real
+                # xk1 = xk1.real
+                # xk2 = xk2.real
 
-                a0 = a1 = 0
-                for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=150, compact=False):
-                    a1 = a0 + cderi_real.shape[0]
-                    cderi_ref = cderi_real + cderi_imag * 1j
-                    cderi_ref = cderi_ref[:j[a0:a1].shape[0]].reshape(-1, nao * nao)
-                    cderi_sol = numpy.einsum("QI,Im,In->Qmn", j[a0:a1], xk1, xk2, optimize=True)
-                    cderi_sol = cderi_sol.reshape(-1, nao * nao)
+                # a0 = a1 = 0
+                # for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=150, compact=False):
+                #     a1 = a0 + cderi_real.shape[0]
+                #     cderi_ref = cderi_real + cderi_imag * 1j
+                #     cderi_ref = cderi_ref[:j[a0:a1].shape[0]].reshape(-1, nao * nao)
+                #     cderi_sol = numpy.einsum("QI,Im,In->Qmn", j[a0:a1], xk1.conj(), xk2, optimize=True)
+                #     cderi_sol = cderi_sol.reshape(-1, nao * nao)
 
-                    # from numpy import savetxt
-                    # savetxt(self.cell.stdout, (cderi_ref.real)[:10, :10], fmt="% 6.4e", delimiter=", ", header="\ncderi_ref")
-                    # savetxt(self.cell.stdout, (cderi_sol.real)[:10, :10], fmt="% 6.4e", delimiter=", ", header="\ncderi_sol")
+                #     from numpy import savetxt
+                #     savetxt(self.cell.stdout, (cderi_ref.real)[:10, :10], fmt="% 6.4e", delimiter=", ", header="\ncderi_ref")
+                #     savetxt(self.cell.stdout, (cderi_sol.real)[:10, :10], fmt="% 6.4e", delimiter=", ", header="\ncderi_sol")
 
-                    err1 = numpy.max(numpy.abs(cderi_ref - cderi_sol))
-                    err2 = numpy.linalg.norm(cderi_ref - cderi_sol)
+                #     err1 = numpy.max(numpy.abs(cderi_ref - cderi_sol))
+                #     err2 = numpy.linalg.norm(cderi_ref - cderi_sol)
 
-                    print("k1 = %d, k2 = %d, q = %d, [%4d:%4d] Max: %6.4e, Mean: %6.4e" % (k1, k2, q, a0, a1, err1, err2))
-                    a0 = a1
+                #     print("k1 = %d, k2 = %d, q = %d, [%4d:%4d] Max: %6.4e, Mean: %6.4e" % (k1, k2, q, a0, a1, err1, err2))
+                #     a0 = a1
+
+                #     assert err1 < 1e-4
 
 if __name__ == '__main__':
     import pyscf
