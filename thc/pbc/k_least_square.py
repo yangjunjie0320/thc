@@ -14,7 +14,26 @@ from thc.pbc.least_square import LeastSquareFitting
 from thc.pbc.gen_grids import BeckeGrids, UniformGrids
 
 def get_cderi(thc_obj=None, k1_and_k2=None):
-    pass
+    k1, k2 = k1_and_k2
+    vk1 = thc_obj.with_df.kpts[k1]
+    vk2 = thc_obj.with_df.kpts[k2]
+
+    naux = thc_obj.with_df.get_naoaux()
+    nao = thc_obj.cell.nao_nr()
+
+    cderi_real = numpy.zeros((naux, nao * nao))
+    cderi_imag = numpy.zeros((naux, nao * nao))
+
+    a0 = a1 = 0
+    for _cderi_real, _cderi_imag, sign in thc_obj.with_df.sr_loop([vk1, vk2], blksize=200, compact=False):
+        a1 = a0 + cderi_real.shape[0]
+        b1 = a0 + _cderi_real[a0:a1].shape[0]
+
+        cderi_real[a0:a1] = _cderi_real[a0:b1]
+        cderi_imag[a0:a1] = _cderi_imag[a0:b1]
+        a0 = a1
+
+    return (cderi_real + cderi_imag * 1j).reshape(naux, nao, nao)
 
 # for a given combination of k-points, we can compute the LS-THC
 def ls_thc_for_kpts(thc_obj=None, k1_and_k2=None):
@@ -36,10 +55,12 @@ def ls_thc_for_kpts(thc_obj=None, k1_and_k2=None):
     phik1 = thc_obj.eval_gto(coord, weigh, kpt=vk1)
     phik2 = thc_obj.eval_gto(coord, weigh, kpt=vk2)
 
-    zeta = numpy.einsum("Im,In,Jm,Jn->IJ", phik1.conj(), phik2, phik1, phik2.conj(), optimize=True)
+    z11 = phik1.conj() @ phik1.T
+    z22 = phik2 @ phik2.conj().T
+    zeta = z11 * z22
     assert numpy.allclose(zeta, zeta.conj().T)
 
-    cderi = get_cderi(thc_obj, k1_and_k2)
+    cderi_ref = get_cderi(thc_obj, k1_and_k2)
 
     u, s, vh = scipy.linalg.svd(zeta)
     mask = s > 1e-16
@@ -50,10 +71,19 @@ def ls_thc_for_kpts(thc_obj=None, k1_and_k2=None):
     y = u @ numpy.diag(s) @ vh
     assert numpy.linalg.norm(y - zeta) < 1e-10
 
-    x = vh.T.conj() @ numpy.diag(1 / s) @ u.conj().T
+    # x = vh.T.conj() @ numpy.diag(1 / s) @ u.conj().T
+    x = scipy.linalg.pinv(zeta)
 
-    rhs = numpy.einsum("Qmn,Im,In->QI", cderi, phik1, phik2.conj(), optimize=True)
+    rhs = numpy.einsum("Qmn,Im,In->QI", cderi_ref, phik1, phik2.conj(), optimize=True)
     z = rhs @ x
+
+    cderi_sol = numpy.einsum("QI,Im,In->Qmn", z, phik1.conj(), phik2, optimize=True)
+
+    err1 = numpy.max(numpy.abs(cderi_ref - cderi_sol))
+    err2 = numpy.linalg.norm(cderi_ref - cderi_sol)
+
+    print("k1 = %d, k2 = %d, Max: %6.4e, Mean: %6.4e" % (k1, k2, err1, err2))
+    return zeta, z
 
 class WithKPoints(LeastSquareFitting):
     def __init__(self, cell, kpts=None):
@@ -258,7 +288,7 @@ if __name__ == '__main__':
     from pyscf import pbc
     c = pyscf.pbc.gto.Cell()
     c.atom  = 'He 2.0000 2.0000 2.0000; He 2.0000 2.0000 6.0000'
-    c.basis = 'sto3g'
+    c.basis = '321g'
     c.a = numpy.diag([4.0000, 4.0000, 8.0000])
     c.unit = 'bohr'
     c.build()
@@ -268,56 +298,76 @@ if __name__ == '__main__':
 
     thc = WithKPoints(c, kpts=kpts)
     thc.verbose = 10
+
     thc.with_df._cderi_to_save = "/Users/yangjunjie/Downloads/cderi-224.h5"
+    thc.with_df.build()
 
     thc.grids = UniformGrids(c)
     thc.grids.verbose = 20
     thc.grids.c_isdf = None
     thc.grids.tol    = None
-    thc.grids.mesh   = [12, 12, 12]
-    thc.build()
-    assert 1 == 2
+    thc.grids.mesh   = [2, 2, 2]
+    thc.grids.build()
 
-    coord0 = numpy.array(thc.grids.coords)
-    weigh0 = numpy.array(thc.grids.weights)
-    ng = len(weigh0)
-    nk = len(kpts)
-    nao = c.nao_nr()
+    vk = thc.with_df.kpts
+    nk = vk.shape[0]
+    nq = nk
 
-    phik = thc.eval_gto(coord0, weigh0, kpts=kpts)
-    assert phik.shape == (nk, ng, nao)
-
-    # ovlp_k_ref = c.pbc_intor("int1e_ovlp", kpts=kpts)
-    # ovlp_k_ref = numpy.array(ovlp_k_ref)
-    # assert ovlp_k_ref.shape == (nk, nao, nao)
-
-    # rho_k1_k2 = numpy.einsum("kxm,lxn->klmnx", phik.conj(), phik)
-    # assert rho_k1_k2.shape == (nk, nk, nao, nao, ng)
-    # ovlp_k_sol = numpy.einsum("kkmnx->kmn", rho_k1_k2)
-    # assert ovlp_k_sol.shape == (nk, nao, nao)
-    # err = numpy.linalg.norm(ovlp_k_ref - ovlp_k_sol)
-    # assert err < 1e-4, err
-
-    kconserv3 = pyscf.pbc.lib.kpts_helper.get_kconserv(c, kpts)
+    kconserv3 = pyscf.pbc.lib.kpts_helper.get_kconserv(c, vk)
     kconserv2 = kconserv3[:, :, 0].T
-    nq = len(numpy.unique(kconserv2))
-    vk = kpts
 
-    assert nk == nq
-    zeta = numpy.zeros((nq, ng, ng), dtype=phik.dtype)
-    for k1, vk1 in enumerate(vk):
-        for k2, vk2 in enumerate(vk):
-            q = kconserv2[k1, k2]
-            z1 = numpy.dot(phik[k1], phik[k1].conj().T)
-            z2 = numpy.dot(phik[k2], phik[k2].conj().T)
-            zeta[q] += z1 * z2
+    q = 1
+    vq = vk[q]
 
+    zeta0 = None
+    z0 = None
+    for k1, vk1 in enumerate(kpts):
+        k2 = kconserv2[q, k1]
+        vk2 = kpts[k2]
+        
+        print("k1 = %d, k2 = %d" % (k1, k2))
+        print("vk1 = ", vk1)
+        print("vk2 = ", vk2)
+        print("vk1 - vk2 = ", vk1 - vk2)
+        print("vq  = ", vq)
 
-    for q in range(nq):
-        u, s, vh = scipy.linalg.svd(zeta[q])
-        mask = s > 1e-16
-        rank = mask.sum()
-        err = s[rank - 1]
-        print("q = %d, rank = %d / %d, err = %6.4e" % (q, rank, ng, err))
+        print(numpy.einsum("x,Lx->L", vk1 - vk2 + vq, c.lattice_vectors()))
 
-    
+        # first question is how to recover z1 from different k1 - k2
+        zeta1, z1 = ls_thc_for_kpts(thc, k1_and_k2=(k1, k2))
+
+        if z0 is None:
+            z0 = z1
+            zeta0 = zeta1
+            from numpy import savetxt
+
+            print("\nz0 real")
+            savetxt(c.stdout, z0.real[:10, :10], fmt="% 6.4e", delimiter=", ")
+
+            print("\nz0 imag")
+            savetxt(c.stdout, z0.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
+
+            print("\nzeta0 real")
+            savetxt(c.stdout, zeta0.real[:10, :10], fmt="% 6.4e", delimiter=", ")
+
+            print("\nzeta0 imag")
+            savetxt(c.stdout, zeta0.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
+
+        else:
+            err = numpy.linalg.norm(z0 - z1)
+            print("err = %6.4e" % err)
+
+            if err > 1e-4:
+                print("\nz1 real")
+                savetxt(c.stdout, z1.real[:10, :10], fmt="% 6.4e", delimiter=", ")
+
+                print("\nz1 imag")
+                savetxt(c.stdout, z1.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
+
+                print("\nzeta0 real")
+                savetxt(c.stdout, zeta1.real[:10, :10], fmt="% 6.4e", delimiter=", ")
+
+                print("\nzeta0 imag")
+                savetxt(c.stdout, zeta1.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
+
+                assert 1 == 2
