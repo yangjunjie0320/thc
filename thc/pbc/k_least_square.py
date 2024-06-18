@@ -13,6 +13,48 @@ import thc
 from thc.pbc.least_square import LeastSquareFitting
 from thc.pbc.gen_grids import BeckeGrids, UniformGrids
 
+def get_cderi(thc_obj=None, k1_and_k2=None):
+    pass
+
+# for a given combination of k-points, we can compute the LS-THC
+def ls_thc_for_kpts(thc_obj=None, k1_and_k2=None):
+    k1, k2 = k1_and_k2
+    vk1 = kpts[k1]
+    vk2 = kpts[k2]
+
+    from pyscf.pbc.lib.kpts_helper import get_kconserv
+    vk = thc_obj.with_df.kpts
+    nk = vk.shape[0]
+
+    kconserv3 = get_kconserv(thc_obj.cell, vk)
+    kconserv2 = kconserv3[:, :, 0].T
+
+    assert thc_obj is not None
+    coord = thc_obj.grids.coords
+    weigh = thc_obj.grids.weights
+
+    phik1 = thc_obj.eval_gto(coord, weigh, kpt=vk1)
+    phik2 = thc_obj.eval_gto(coord, weigh, kpt=vk2)
+
+    zeta = numpy.einsum("Im,In,Jm,Jn->IJ", phik1.conj(), phik2, phik1, phik2.conj(), optimize=True)
+    assert numpy.allclose(zeta, zeta.conj().T)
+
+    cderi = get_cderi(thc_obj, k1_and_k2)
+
+    u, s, vh = scipy.linalg.svd(zeta)
+    mask = s > 1e-16
+    u = u[:, mask]
+    s = s[mask]
+    vh = vh[mask]
+
+    y = u @ numpy.diag(s) @ vh
+    assert numpy.linalg.norm(y - zeta) < 1e-10
+
+    x = vh.T.conj() @ numpy.diag(1 / s) @ u.conj().T
+
+    rhs = numpy.einsum("Qmn,Im,In->QI", cderi, phik1, phik2.conj(), optimize=True)
+    z = rhs @ x
+
 class WithKPoints(LeastSquareFitting):
     def __init__(self, cell, kpts=None):
         assert kpts is not None
@@ -226,7 +268,7 @@ if __name__ == '__main__':
 
     thc = WithKPoints(c, kpts=kpts)
     thc.verbose = 10
-    thc.df._cderi_to_save = ""
+    thc.with_df._cderi_to_save = "/Users/yangjunjie/Downloads/cderi-224.h5"
 
     thc.grids = UniformGrids(c)
     thc.grids.verbose = 20
