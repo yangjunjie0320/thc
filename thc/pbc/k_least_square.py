@@ -55,9 +55,11 @@ def ls_thc_for_kpts(thc_obj=None, k1_and_k2=None):
     phik1 = thc_obj.eval_gto(coord, weigh, kpt=vk1)
     phik2 = thc_obj.eval_gto(coord, weigh, kpt=vk2)
 
-    z11 = phik1.conj() @ phik1.T
-    z22 = phik2 @ phik2.conj().T
-    zeta = z11 * z22
+    zeta1 = (phik1.conj() @ phik1.T) * (phik2 @ phik2.conj().T)
+    zeta2 = numpy.einsum("Im,In,Jm,Jn->IJ", phik1.conj(), phik2, phik1, phik2.conj(), optimize=True)
+    assert numpy.allclose(zeta1, zeta2)
+
+    zeta = zeta1
     assert numpy.allclose(zeta, zeta.conj().T)
 
     cderi_ref = get_cderi(thc_obj, k1_and_k2)
@@ -306,7 +308,7 @@ if __name__ == '__main__':
     thc.grids.verbose = 20
     thc.grids.c_isdf = None
     thc.grids.tol    = None
-    thc.grids.mesh   = [2, 2, 2]
+    thc.grids.mesh   = [4,] * 3
     thc.grids.build()
 
     vk = thc.with_df.kpts
@@ -324,14 +326,16 @@ if __name__ == '__main__':
     for k1, vk1 in enumerate(kpts):
         k2 = kconserv2[q, k1]
         vk2 = kpts[k2]
+
+        if not (k1, k2) in [(0, 3), (1, 0)]:
+            continue
         
-        print("k1 = %d, k2 = %d" % (k1, k2))
+        print("\nk1 = %d, k2 = %d" % (k1, k2))
         print("vk1 = ", vk1)
         print("vk2 = ", vk2)
         print("vk1 - vk2 = ", vk1 - vk2)
         print("vq  = ", vq)
-
-        print(numpy.einsum("x,Lx->L", vk1 - vk2 + vq, c.lattice_vectors()))
+        # print(numpy.einsum("x,Lx->L", vk1 - vk2 + vq, c.lattice_vectors()))
 
         # first question is how to recover z1 from different k1 - k2
         zeta1, z1 = ls_thc_for_kpts(thc, k1_and_k2=(k1, k2))
@@ -341,11 +345,11 @@ if __name__ == '__main__':
             zeta0 = zeta1
             from numpy import savetxt
 
-            print("\nz0 real")
-            savetxt(c.stdout, z0.real[:10, :10], fmt="% 6.4e", delimiter=", ")
+            # print("\nz0 real")
+            # savetxt(c.stdout, z0.real[:10, :10], fmt="% 6.4e", delimiter=", ")
 
-            print("\nz0 imag")
-            savetxt(c.stdout, z0.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
+            # print("\nz0 imag")
+            # savetxt(c.stdout, z0.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
 
             print("\nzeta0 real")
             savetxt(c.stdout, zeta0.real[:10, :10], fmt="% 6.4e", delimiter=", ")
@@ -354,15 +358,15 @@ if __name__ == '__main__':
             savetxt(c.stdout, zeta0.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
 
         else:
-            err = numpy.linalg.norm(z0 - z1)
+            err = numpy.abs(z1 - z0).max()
             print("err = %6.4e" % err)
 
             if err > 1e-4:
-                print("\nz1 real")
-                savetxt(c.stdout, z1.real[:10, :10], fmt="% 6.4e", delimiter=", ")
+                # print("\nz1 real")
+                # savetxt(c.stdout, z1.real[:10, :10], fmt="% 6.4e", delimiter=", ")
 
-                print("\nz1 imag")
-                savetxt(c.stdout, z1.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
+                # print("\nz1 imag")
+                # savetxt(c.stdout, z1.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
 
                 print("\nzeta0 real")
                 savetxt(c.stdout, zeta1.real[:10, :10], fmt="% 6.4e", delimiter=", ")
