@@ -34,9 +34,6 @@ class LeastSquareFitting(thc.mol.LeastSquareFitting):
 
 LS = LeastSquareFitting
 
-# from thc.pbc.k_least_square import WithKPoints
-# LeastSquareFittingWithKPoint = WithKPoint
-
 if __name__ == '__main__':
     c = pyscf.pbc.gto.Cell()
     c.atom = '''C     0.0000  0.0000  0.0000
@@ -55,8 +52,9 @@ if __name__ == '__main__':
     import thc
     thc = thc.LS(c)
     thc.verbose = 6
+    thc.grids = BeckeGrids(c)
+    thc.grids.level = 1
     thc.grids.c_isdf = None
-    thc.grids.tol = 1e-16
     thc.max_memory = 2000
     thc.build()
 

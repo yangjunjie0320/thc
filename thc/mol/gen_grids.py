@@ -9,8 +9,8 @@ import pyscf.dft.gen_grid
     
 
 class InterpolatingPointsMixin(lib.StreamObject):
-    c_isdf = 10
-    tol = 1e-20
+    c_isdf = None
+    tol = 1e-30
 
     def __init__(self):
         raise NotImplementedError
@@ -59,8 +59,8 @@ class InterpolatingPointsMixin(lib.StreamObject):
         phi4 = numpy.dot(phi, phi.T) ** 2
 
         from pyscf.lib import pivoted_cholesky
-        chol, perm, rank = pivoted_cholesky(phi4, tol=-1.0, lower=False)
-        nip = min(150 * nao, ng)
+        chol, perm, rank = pivoted_cholesky(phi4, tol=self.tol, lower=False)
+        nip = min(rank, nip)
         err = chol[nip-1, nip-1]
 
         mask = perm[:nip]

@@ -16,7 +16,7 @@ class TensorHyperConractionMixin(lib.StreamObject):
     coul = None
     xipt = None
 
-    tol = 1e-16
+    tol = 1e-20
 
 class LeastSquareFitting(TensorHyperConractionMixin):
     def __init__(self, mol):
@@ -66,18 +66,17 @@ class LeastSquareFitting(TensorHyperConractionMixin):
         ng, nao = phi.shape
 
         chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta, tol=self.tol, lower=False)
-        nip = rank
+        nip = rank + 10
         
-        perm = perm[:nip]
+        mask = perm[:nip]
         chol = chol[:nip, :nip]
         err  = abs(chol[nip - 1, nip - 1])
         log.info("Pivoted Cholesky rank: %d / %d, err = %6.4e", rank, ng, err)
 
-        xipt = phi[perm]
+        xipt = phi[mask]
         cput1 = logger.timer(self, "interpolating vectors", *cput0)
 
-        # Build the coulomb kernel
-        # rhs = numpy.einsum("Qmn,Im,In->QI", cderi, xip, xip)
+        # Build the coulomb kernel rhs = numpy.einsum("Qmn,Im,In->QI", cderi, xip, xip)
         naux = with_df.get_naoaux()
         rhs = numpy.zeros((naux, nip))
 
@@ -103,8 +102,8 @@ class LeastSquareFitting(TensorHyperConractionMixin):
 
         cput1 = logger.timer(self, "RHS", *cput1)
 
-        ww = scipy.linalg.solve_triangular(chol.T, rhs.T, lower=True).T
-        coul = scipy.linalg.solve_triangular(chol, ww.T, lower=False).T
+        res = scipy.linalg.lstsq(zeta[mask][:, mask], rhs.T, cond=None)
+        coul = res[0].T
         
         cput1 = logger.timer(self, "solving linear equations", *cput1)
         logger.timer(self, "LS-THC", *cput0)
@@ -132,7 +131,6 @@ if __name__ == '__main__':
     thc.grids.level  = 3
     thc.verbose      = 6
     thc.grids.c_isdf = None
-    thc.grids.tol    = 1e-20
     thc.max_memory   = 500
     thc.build()
 

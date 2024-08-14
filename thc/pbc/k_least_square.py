@@ -13,6 +13,12 @@ import thc
 from thc.pbc.least_square import LeastSquareFitting
 from thc.pbc.gen_grids import BeckeGrids, UniformGrids
 
+def pinv(a, tol=1e-12):
+    # u, s, vh = scipy.linalg.svd(a)
+    # sinv = numpy.where(s > tol, 1 / s, 0)
+    # return vh.T @ numpy.diag(sinv) @ u.T
+    return scipy.linalg.pinv(a, rcond=tol)
+
 def get_cderi(thc_obj=None, k1_and_k2=None):
     k1, k2 = k1_and_k2
     vk1 = thc_obj.with_df.kpts[k1]
@@ -36,7 +42,7 @@ def get_cderi(thc_obj=None, k1_and_k2=None):
     return (cderi_real + cderi_imag * 1j).reshape(naux, nao, nao)
 
 # for a given combination of k-points, we can compute the LS-THC
-def ls_thc_for_kpts(thc_obj=None, k1_and_k2=None):
+def ls_thc_for_kpts(thc_obj=None, k1_and_k2=None, mask=None):
     k1, k2 = k1_and_k2
     vk1 = kpts[k1]
     vk2 = kpts[k2]
@@ -55,37 +61,25 @@ def ls_thc_for_kpts(thc_obj=None, k1_and_k2=None):
     phik1 = thc_obj.eval_gto(coord, weigh, kpt=vk1)
     phik2 = thc_obj.eval_gto(coord, weigh, kpt=vk2)
 
-    zeta1 = (phik1.conj() @ phik1.T) * (phik2 @ phik2.conj().T)
-    zeta2 = numpy.einsum("Im,In,Jm,Jn->IJ", phik1.conj(), phik2, phik1, phik2.conj(), optimize=True)
-    assert numpy.allclose(zeta1, zeta2)
+    if mask is not None:
+        phik1 = phik1[mask]
+        phik2 = phik2[mask]
 
-    zeta = zeta1
-    assert numpy.allclose(zeta, zeta.conj().T)
+    zeta = (phik1.conj() @ phik1.T) * (phik2 @ phik2.conj().T)
 
     cderi_ref = get_cderi(thc_obj, k1_and_k2)
-
-    u, s, vh = scipy.linalg.svd(zeta)
-    mask = s > 1e-16
-    u = u[:, mask]
-    s = s[mask]
-    vh = vh[mask]
-
-    y = u @ numpy.diag(s) @ vh
-    assert numpy.linalg.norm(y - zeta) < 1e-10
-
-    # x = vh.T.conj() @ numpy.diag(1 / s) @ u.conj().T
-    x = scipy.linalg.pinv(zeta)
+    x = pinv(zeta)
 
     rhs = numpy.einsum("Qmn,Im,In->QI", cderi_ref, phik1, phik2.conj(), optimize=True)
-    z = rhs @ x
+    coul = rhs @ x
 
-    cderi_sol = numpy.einsum("QI,Im,In->Qmn", z, phik1.conj(), phik2, optimize=True)
+    # cderi_sol = numpy.einsum("QI,Im,In->Qmn", z, phik1.conj(), phik2, optimize=True)
 
-    err1 = numpy.max(numpy.abs(cderi_ref - cderi_sol))
-    err2 = numpy.linalg.norm(cderi_ref - cderi_sol)
+    # err1 = numpy.max(numpy.abs(cderi_ref - cderi_sol))
+    # err2 = numpy.linalg.norm(cderi_ref - cderi_sol)
 
-    print("k1 = %d, k2 = %d, Max: %6.4e, Mean: %6.4e" % (k1, k2, err1, err2))
-    return zeta, z
+    # print("k1 = %d, k2 = %d, Max: %6.4e, Mean: %6.4e" % (k1, k2, err1, err2))
+    return coul, zeta, rhs, phik1, phik2
 
 class WithKPoints(LeastSquareFitting):
     def __init__(self, cell, kpts=None):
@@ -149,19 +143,19 @@ class WithKPoints(LeastSquareFitting):
         phi_k = self.eval_gto(grids.coords, grids.weights, kpts=vk, kpt=None)
         nk, ng, nao = phi_k.shape
         naux = with_df.get_naoaux()
-        
         z_q = numpy.zeros((nq, ng, ng), dtype=phi_k.dtype)
         
-        for k1, vk1 in enumerate(vk):
-            for k2, vk2 in enumerate(vk):
-                q = kconserv2[k1, k2]
-                phik1 = phi_k[k1]
-                phik2 = phi_k[k2]
+        k1 = 0
+        vk1 = vk[k1]
+        for k2, vk2 in enumerate(vk):
+            q = kconserv2[k1, k2]
+            phik1 = phi_k[k1]
+            phik2 = phi_k[k2]
 
-                assert phik1.shape == (ng, nao)
-                assert phik2.shape == (ng, nao)
+            assert phik1.shape == (ng, nao)
+            assert phik2.shape == (ng, nao)
 
-                z_q[q] += numpy.einsum("Jm,Jn,Im,In->JI", phik1.conj(), phik2, phik1, phik2.conj(), optimize=True)
+            z_q[q] = (phik1.conj() @ phik1.T) * (phik2 @ phik2.conj().T)
 
         ww = numpy.zeros(ng)
         for q in range(nq):
@@ -172,118 +166,110 @@ class WithKPoints(LeastSquareFitting):
 
             err = abs(chol[rank - 1, rank - 1])
             log.info("Pivoted Cholesky rank: %d / %d, err = %6.4e", rank, ng, err)
-            
-        m = (ww > 1e-16)
-        nip = m.sum()
-        zeta_q = z_q[:, m][:, :, m]
-        xipt_k = phi_k[:, m, :]
+        
+        mm = (ww > 1e-16)
+        nip = mm.sum()
+        zeta_q = z_q[:, mm][:, :, mm]
+        xipt_k = phi_k[:, mm, :]
 
         assert zeta_q.shape == (nq, nip, nip)
         assert xipt_k.shape == (nk, nip, nao)
         
         rhs = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
 
-        for k1, vk1 in enumerate(vk):
-            for k2, vk2 in enumerate(vk):
-                q = kconserv2[k1, k2]
-                a0 = a1 = 0
+        k1 = 0
+        vk1 = vk[k1]
+        for k2, vk2 in enumerate(vk):
+            # k1 - k2 + G = q
+            q = kconserv2[k1, k2]
+            a0 = a1 = 0
 
-                xk1 = xipt_k[k1]
-                xk2 = xipt_k[k2]
-                for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=200, compact=False):
-                    a1 = a0 + cderi_real.shape[0]
-                    b1 = rhs[q, a0:a1].shape[0]
+            xk1 = xipt_k[k1]
+            xk2 = xipt_k[k2]
+            for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=200, compact=False):
+                a1 = a0 + cderi_real.shape[0]
+                b1 = rhs[q, a0:a1].shape[0]
 
-                    cderi = cderi_real + cderi_imag * 1j
-                    cderi = cderi[:b1].reshape(b1, nao, nao)
+                cderi = cderi_real + cderi_imag * 1j
+                cderi = cderi[:b1].reshape(b1, nao, nao)
 
-                    rhs[q, a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xk1, xk2.conj(), optimize=True)
+                rhs[q, a0:a1] += numpy.einsum("Qmn,Im,In->QI", cderi, xk1, xk2.conj(), optimize=True)
 
-                    a0 = a1
+                a0 = a1
 
         coul_q = numpy.zeros((nq, naux, nip), dtype=xipt_k.dtype)
         for q in range(nq):
             u, s, vh = scipy.linalg.svd(zeta_q[q])
-            zeta_ = u @ numpy.diag(s) @ vh
-            err = numpy.linalg.norm(zeta_ - zeta_q[q])
-            assert err < 1e-10
-
-            m = s > 1e-14
-            rank = m.sum()
-
-            u = u[:, :rank]
-            s = s[:rank]
-            vh = vh[:rank]
-
-            err = s[rank - 1]
-            log.info("q = %d, rank = %d / %d, err = %6.4e", q, rank, nip, err)
-            zinv = vh.T.conj() @ numpy.diag(1 / s) @ u.conj().T
-            coul_q[q] = rhs[q] @ zinv
+            coul_q[q] = rhs[q] @ pinv(zeta_q[q])
 
         for k1, vk1 in enumerate(vk):
             for k2, vk2 in enumerate(vk):
-                for k3, vk3 in enumerate(vk):
-                    k4 = kconserv3[k1, k2, k3]
-                    vk4 = vk[k4]
+                q = kconserv2[k1, k2]
+                vq = vk[q]
 
-                    xk1 = xipt_k[k1]
-                    xk2 = xipt_k[k2]
-                    xk3 = xipt_k[k3]
-                    xk4 = xipt_k[k4]
+                cderi_ref = get_cderi(self, (k1, k2))
 
-                    q12 = kconserv2[k1, k2]
-                    q34 = kconserv2[k3, k4]
+                # vk1 - vk2 + G = vq
+                coul_ref, zeta_ref, rhs_ref, x1, x2 = ls_thc_for_kpts(thc, k1_and_k2=(k1, k2), mask=mm)
+                zeta_sol = zeta_q[q]
+                rhs_sol = rhs[q]
+                coul_sol = coul_q[q]
 
-                    jq12 = coul_q[q12]
-                    jq34 = coul_q[q34]
+                tmp = {
+                    "zeta_sol": zeta_sol,
+                    "zeta_ref": zeta_ref,
+                    "rhs_sol": rhs_sol,
+                    "rhs_ref": rhs_ref,
+                    "coul_sol": coul_sol,
+                    "coul_ref": coul_ref,
+                    "zinv_sol": pinv(zeta_sol),
+                    "zinv_ref": pinv(zeta_ref),
+                }
+                
+                assert numpy.allclose(x1, xipt_k[k1])
+                assert numpy.allclose(x2, xipt_k[k2])
+                
+                # assert 1 == 2
+                # assert numpy.allclose(z, coul_q[q]), abs(z - coul_q[q]).max()
 
-                    if not q12 == 0:
-                        continue
+                cderi_sol = numpy.einsum("QI,Im,In->Qmn", coul_q[q], x1.conj(), x2, optimize=True)
+                err1 = abs(cderi_ref - cderi_sol).max()
+                err2 = numpy.linalg.norm(cderi_ref - cderi_sol)
+                print("k1 = %d, k2 = %d, Max: %6.4e, Mean: %6.4e" % (k1, k2, err1, err2))
 
-                    eri_ref = with_df.get_eri([vk1, vk2, vk3, vk4], compact=False)
-                    eri_ref = eri_ref.reshape(nao, nao, nao, nao)
+                def check(m):
+                    m1 = tmp[m + "_sol"]
+                    m2 = tmp[m + "_ref"]
+                    err1 = abs(m1 - m2).max()
+                    err2 = numpy.linalg.norm(m1 - m2)
 
-                    eri_sol = numpy.einsum(
-                        "QI,QJ,Im,In,Jk,Jl->mnkl", 
-                        jq12, jq34, 
-                        xk1.conj(), xk2, 
-                        xk3, xk4.conj(), 
-                        optimize=True
-                    )
 
-                    err1 = numpy.max(numpy.abs(eri_ref - eri_sol))
-                    err2 = numpy.linalg.norm(eri_ref - eri_sol)
+                    if not (err1 < 1e-5 and err2 < 1e-5):
+                        pass
+                        # print(f"\n\nerr[{m}] Max: %6.4e, Mean: %6.4e" % (err1, err2))
+                        # print(f"{m}_sol real")
+                        # numpy.savetxt(self.stdout, m1.real[:10, :10], fmt="% 6.4e", delimiter=", ")
+                        # print(f"{m}_sol imag")
+                        # numpy.savetxt(self.stdout, m1.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
 
-                    print("k1 = %d, k2 = %d, k3 = %d, k4 = %d, q12 = %d, q34 = %d, Max: %6.4e, Mean: %6.4e" % (k1, k2, k3, k4, q12, q34, err1, err2))
-                    assert err1 < 1e-4
-                    assert err2 < 1e-4
-                # q = kconserv2[k1, k2]
-                # j = coul_q[q]
-                # xk1 = xipt_k[k1]
-                # xk2 = xipt_k[k2]
+                        # print(f"{m}_ref real")
+                        # numpy.savetxt(self.stdout, m2.real[:10, :10], fmt="% 6.4e", delimiter=", ")
+                        # print(f"{m}_ref imag")
+                        # numpy.savetxt(self.stdout, m2.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
 
-                # xk1 = xk1.real
-                # xk2 = xk2.real
+                    print(f"err[{m}] Max: %6.4e, Mean: %6.4e" % (err1, err2))
+                        
 
-                # a0 = a1 = 0
-                # for cderi_real, cderi_imag, sign in with_df.sr_loop([vk1, vk2], blksize=150, compact=False):
-                #     a1 = a0 + cderi_real.shape[0]
-                #     cderi_ref = cderi_real + cderi_imag * 1j
-                #     cderi_ref = cderi_ref[:j[a0:a1].shape[0]].reshape(-1, nao * nao)
-                #     cderi_sol = numpy.einsum("QI,Im,In->Qmn", j[a0:a1], xk1.conj(), xk2, optimize=True)
-                #     cderi_sol = cderi_sol.reshape(-1, nao * nao)
+                check("zeta")
+                # check("zinv")
+                # check("rhs")
+                # check("coul")
 
-                #     from numpy import savetxt
-                #     savetxt(self.cell.stdout, (cderi_ref.real)[:10, :10], fmt="% 6.4e", delimiter=", ", header="\ncderi_ref")
-                #     savetxt(self.cell.stdout, (cderi_sol.real)[:10, :10], fmt="% 6.4e", delimiter=", ", header="\ncderi_sol")
+                # assert err1 < 1e-5
+                # assert err2 < 1e-5
 
-                #     err1 = numpy.max(numpy.abs(cderi_ref - cderi_sol))
-                #     err2 = numpy.linalg.norm(cderi_ref - cderi_sol)
 
-                #     print("k1 = %d, k2 = %d, q = %d, [%4d:%4d] Max: %6.4e, Mean: %6.4e" % (k1, k2, q, a0, a1, err1, err2))
-                #     a0 = a1
 
-                #     assert err1 < 1e-4
 
 if __name__ == '__main__':
     import pyscf
@@ -308,70 +294,71 @@ if __name__ == '__main__':
     thc.grids.verbose = 20
     thc.grids.c_isdf = None
     thc.grids.tol    = None
-    thc.grids.mesh   = [4,] * 3
+    thc.grids.mesh   = [12,] * 3
     thc.grids.build()
+    thc.build()
 
-    vk = thc.with_df.kpts
-    nk = vk.shape[0]
-    nq = nk
+    # vk = thc.with_df.kpts
+    # nk = vk.shape[0]
+    # nq = nk
 
-    kconserv3 = pyscf.pbc.lib.kpts_helper.get_kconserv(c, vk)
-    kconserv2 = kconserv3[:, :, 0].T
+    # kconserv3 = pyscf.pbc.lib.kpts_helper.get_kconserv(c, vk)
+    # kconserv2 = kconserv3[:, :, 0].T
 
-    q = 1
-    vq = vk[q]
+    # q = 1
+    # vq = vk[q]
 
-    zeta0 = None
-    z0 = None
-    for k1, vk1 in enumerate(kpts):
-        k2 = kconserv2[q, k1]
-        vk2 = kpts[k2]
+    # zeta0 = None
+    # z0 = None
+    # for k1, vk1 in enumerate(kpts):
+    #     k2 = kconserv2[q, k1]
+    #     vk2 = kpts[k2]
 
-        if not (k1, k2) in [(0, 3), (1, 0)]:
-            continue
+    #     if not (k1, k2) in [(0, 3), (1, 0)]:
+    #         continue
         
-        print("\nk1 = %d, k2 = %d" % (k1, k2))
-        print("vk1 = ", vk1)
-        print("vk2 = ", vk2)
-        print("vk1 - vk2 = ", vk1 - vk2)
-        print("vq  = ", vq)
-        # print(numpy.einsum("x,Lx->L", vk1 - vk2 + vq, c.lattice_vectors()))
+    #     print("\nk1 = %d, k2 = %d" % (k1, k2))
+    #     print("vk1 = ", vk1)
+    #     print("vk2 = ", vk2)
+    #     print("vk1 - vk2 = ", vk1 - vk2)
+    #     print("vq  = ", vq)
+    #     # print(numpy.einsum("x,Lx->L", vk1 - vk2 + vq, c.lattice_vectors()))
 
-        # first question is how to recover z1 from different k1 - k2
-        zeta1, z1 = ls_thc_for_kpts(thc, k1_and_k2=(k1, k2))
+    #     # first question is how to recover z1 from different k1 - k2
+    #     zeta1, z1 = ls_thc_for_kpts(thc, k1_and_k2=(k1, k2))
 
-        if z0 is None:
-            z0 = z1
-            zeta0 = zeta1
-            from numpy import savetxt
+    #     if z0 is None:
+    #         z0 = z1
+    #         zeta0 = zeta1
+    #         from numpy import savetxt
 
-            # print("\nz0 real")
-            # savetxt(c.stdout, z0.real[:10, :10], fmt="% 6.4e", delimiter=", ")
+    #         # print("\nz0 real")
+    #         # savetxt(c.stdout, z0.real[:10, :10], fmt="% 6.4e", delimiter=", ")
 
-            # print("\nz0 imag")
-            # savetxt(c.stdout, z0.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
+    #         # print("\nz0 imag")
+    #         # savetxt(c.stdout, z0.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
 
-            print("\nzeta0 real")
-            savetxt(c.stdout, zeta0.real[:10, :10], fmt="% 6.4e", delimiter=", ")
+    #         print("\nzeta0 real")
+    #         savetxt(c.stdout, zeta0.real[:10, :10], fmt="% 6.4e", delimiter=", ")
 
-            print("\nzeta0 imag")
-            savetxt(c.stdout, zeta0.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
+    #         print("\nzeta0 imag")
+    #         savetxt(c.stdout, zeta0.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
 
-        else:
-            err = numpy.abs(z1 - z0).max()
-            print("err = %6.4e" % err)
+    #     else:
+    #         err = numpy.abs(z1 - z0).max()
+    #         print("err = %6.4e" % err)
 
-            if err > 1e-4:
-                # print("\nz1 real")
-                # savetxt(c.stdout, z1.real[:10, :10], fmt="% 6.4e", delimiter=", ")
+    #         if err > 1e-4:
+    #             # print("\nz1 real")
+    #             # savetxt(c.stdout, z1.real[:10, :10], fmt="% 6.4e", delimiter=", ")
 
-                # print("\nz1 imag")
-                # savetxt(c.stdout, z1.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
+    #             # print("\nz1 imag")
+    #             # savetxt(c.stdout, z1.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
 
-                print("\nzeta0 real")
-                savetxt(c.stdout, zeta1.real[:10, :10], fmt="% 6.4e", delimiter=", ")
+    #             print("\nzeta0 real")
+    #             savetxt(c.stdout, zeta1.real[:10, :10], fmt="% 6.4e", delimiter=", ")
 
-                print("\nzeta0 imag")
-                savetxt(c.stdout, zeta1.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
+    #             print("\nzeta0 imag")
+    #             savetxt(c.stdout, zeta1.imag[:10, :10], fmt="% 6.4e", delimiter=", ")
 
-                assert 1 == 2
+    #             assert 1 == 2

@@ -25,20 +25,20 @@ class BeckeGrids(InterpolatingPointsMixin, pyscf.pbc.dft.gen_grid.BeckeGrids):
         return thc.mol.gen_grids.InterpolatingPointsMixin.build(self, *args, **kwargs)
 
     def _divide(self, coord):
-        rcut = pyscf.pbc.gto.eval_gto._estimate_rcut(self.cell)
-        rcut = rcut.min()
-        xa = self.mol.atom_coords() + self.cell.get_lattice_Ls(rcut=rcut).reshape(-1, 1, 3)
+        cell = self.cell
+        from pyscf.pbc.tools.k2gamma import translation_vectors_for_kmesh
+        xa = self.mol.atom_coords()
+        xl = translation_vectors_for_kmesh(cell, [3, 3, 3], wrap_around=True)
+
         xg = coord
 
-        nimg = xa.shape[0]
-        na = xa.shape[1]
+        nl = xl.shape[0]
+        na = xa.shape[0]
         ng = xg.shape[0]
-
-        assert xa.shape == (nimg, na, 3)
-        assert xg.shape == (ng, 3)
         assert na < ng
 
-        d = numpy.linalg.norm(xg[None, None, :, :] - xa[:, :, None, :], axis=3)
+        dx = xl[:, None, None, :] + xa[None, :, None, :] - xg[None, None, :, :]
+        d = numpy.linalg.norm(dx, axis=3)
         d = numpy.min(d, axis=0)
         assert d.shape == (na, ng)
 
