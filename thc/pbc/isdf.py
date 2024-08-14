@@ -9,88 +9,36 @@ from pyscf.pbc.dft import numint
 from pyscf.lib import logger
 
 import thc
-from thc.mol.least_square import TensorHyperConractionMixin
-from thc.pbc.gen_grids import InterpolatingPoints
+from thc.pbc.gen_grids import BeckeGrids
+from thc.pbc.least_square import LeastSquareFitting
 
-
-class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
-    def __init__(self, mol):
-        self.cell = self.mol = mol
-        self.mesh = self.cell.mesh
-
-        self.grids = InterpolatingPoints(mol)
+class InterpolativeSeparableDensityFitting(LeastSquareFitting):
+    def __init__(self, cell):
+        self.cell = self.mol = cell
+        self.grids = BeckeGrids(cell)
         self.grids.level = 0
-        self.max_memory = mol.max_memory
-
-    def dump_flags(self):
-        log = logger.Logger(self.stdout, self.verbose)
-
-        log.info('\n******** %s ********', self.__class__)
-        for k, v in self.__dict__.items():
-            if not isinstance(v, (int, float, str)) or k == "verbose": continue
-            log.info('%s = %s', k, v)
-        log.info('')
-
-    def eval_gto(self, coords, weights):
-        phi = self.cell.pbc_eval_gto("GTOval", coords)
-        phi *= (numpy.abs(weights) ** 0.5)[:, None]
-        return phi
+        self.max_memory = cell.max_memory
     
-    def build(self, kpts=None):
-        assert kpts is None
-
+    def build(self):
         log = logger.Logger(self.stdout, self.verbose)
         self.grids.verbose = self.verbose
-
-        if self.grids.coords is None:
-            log.info('\n******** %s ********', self.grids.__class__)
-            self.grids.dump_flags()
-            self.grids.build()
+        
+        cell = self.cell
         grids = self.grids
+
+        if grids.coords is None:
+            grids.dump_flags()
+            grids.build()
 
         self.dump_flags()
 
-        mesh = self.mesh
-        ng = numpy.prod(mesh)
+        cput0 = (logger.process_clock(), logger.perf_counter())
 
-        coord = self.cell.gen_uniform_grids(mesh)
-        weigh = self.cell.vol / ng * numpy.ones(ng)
+        mesh = cell.mesh
+        coord = cell.get_uniform_grids(mesh, wrap_around=False)
+        weights = numpy.ones(coord.shape[0])
 
-        # calculate the distance among coords and grids.coords
-        # dist = numpy.sum((coord[:, numpy.newaxis, :] - grids.coords[numpy.newaxis, :, :]) ** 2, axis=2)
-        # mask = numpy.argmin(dist, axis=0)
-        # mask = numpy.unique(mask)
-        mask = numpy.arange(ng)
-
-        phi = self.eval_gto(coord, weigh)
-        zeta = lib.dot(phi[mask], phi[mask].T) ** 2
-        chol, perm, rank = lib.scipy_helper.pivoted_cholesky(zeta.real, tol=self.tol, lower=False)
-        nip = rank
-        
-        perm = perm[:nip]
-        chol = chol[:nip, :nip]
-        err  = abs(chol[nip - 1, nip - 1])
-        log.info("Pivoted Cholesky rank: %d / %d, err = %6.4e", rank, len(mask), err)
-
-        mask = mask[perm]
-
-        xx = phi[mask]
-        z = lib.dot(xx, phi.T) ** 2
-        cc, rank = scipy.linalg.pinv(z[:, mask], return_rank=True)
-        theta = cc @ z
-
-        y = numpy.fft.fftn(theta.reshape(-1, *mesh), axes=(1, 2, 3)).reshape(-1, ng)
-
-        from pyscf.pbc.tools import get_coulG
-        g2inv = get_coulG(self.cell, mesh=mesh)
-        g2inv *= self.cell.vol / ng ** 2
-        coul = numpy.einsum('ug,g,vg->uv', y.conj(), g2inv, y, optimize=True)
-
-        self.coul = coul
-        self.xipt = xx
-        return coul, xx
-
-
+FFTISDF = ISDF = InterpolativeSeparableDensityFitting
 
 if __name__ == '__main__':
     c   = pyscf.pbc.gto.Cell()

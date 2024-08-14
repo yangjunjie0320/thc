@@ -49,7 +49,6 @@ class LeastSquareFitting(TensorHyperConractionMixin):
         grids   = self.grids
 
         if self.grids.coords is None:
-            log.info('\n******** %s ********', self.grids.__class__)
             self.grids.dump_flags()
             self.grids.build()
 
