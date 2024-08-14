@@ -93,20 +93,20 @@ class InterpolativeSeparableDensityFitting(TensorHyperConractionMixin):
 
 
 if __name__ == '__main__':
-    c = pyscf.pbc.gto.Cell()
-    c.atom = '''C     0.      0.      0.    
-                C     0.8917  0.8917  0.8917
-                C     1.7834  1.7834  0.    
-                C     2.6751  2.6751  0.8917
-                C     1.7834  0.      1.7834
-                C     2.6751  0.8917  2.6751
-                C     0.      1.7834  1.7834
-                C     0.8917  2.6751  2.6751'''
-    c.basis = 'gth-szv'
-    c.pseudo = 'gth-pade'
+    c   = pyscf.pbc.gto.Cell()
     c.a = numpy.eye(3) * 3.5668
+    c.atom = '''C     0.0000  0.0000  0.0000
+                C     0.8917  0.8917  0.8917
+                C     1.7834  1.7834  0.0000
+                C     2.6751  2.6751  0.8917
+                C     1.7834  0.0000  1.7834
+                C     2.6751  0.8917  2.6751
+                C     0.0000  1.7834  1.7834
+                C     0.8917  2.6751  2.6751'''
+    c.basis  = 'gth-szv'
+    c.pseudo = 'gth-pade'
+    c.verbose = 0
     c.unit = 'aa'
-    c.mesh = [20, 20, 20]
     c.build()
 
     import thc
